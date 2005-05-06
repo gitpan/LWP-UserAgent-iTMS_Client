@@ -1,0 +1,34 @@
+NAME
+
+LWP::UserAgent::iTMS_Client -- User Agent for the Apple iTunes Music Store
+
+DESCRIPTION
+    
+Interact with the iTunes Music Store over the Internet
+
+SYNOPSIS
+
+use LWP::UserAgent::iTMS_Client;
+
+my $ua = new LWP::UserAgent::iTMS_Client(
+
+
+);
+
+my $response = $ua->request_search(
+);
+
+my $reponse = $ua->get_keys(
+);
+
+
+
+To install the module...
+
+perl Makefile.PL
+make
+make test
+make install
+
+
+If you are on a windows box you should use 'nmake' rather than 'make'.
