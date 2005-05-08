@@ -2,7 +2,7 @@ package LWP::UserAgent::iTMS_Client;
 
 require 5.006;
 use base qw/ LWP::UserAgent /;
-our $VERSION = '0.01_01';
+our $VERSION = '0.02';
 
 use strict;
 use warnings;
@@ -48,7 +48,7 @@ my %search_topics = (   album => 'albumTerm', artist => 'artistTerm',
 my $all_search_url = 'http://phobos.apple.com/WebObjects/MZSearch.woa/wa/com.apple.jingle.search.DirectAction/search?';
 my $advanced_search_url = 'http://phobos.apple.com/WebObjects/MZSearch.woa/wa/advancedSearchResults?';
 
-my %TMS_genres =   ( "All Genres" => 1, Alternative => 1, Audiobooks => 1,
+my %iTMS_genres =   ( "All Genres" => 1, Alternative => 1, Audiobooks => 1,
   Blues => 1, "Children&#39;s Music" => 1, Classical => 1, Comedy => 1, 
   Country => 1, Dance => 1, Disney => 1, Electronic => 1, Folk => 1, 
   "French Pop" => 1, "German Pop" => 1, "German Pop" => 1, "Hip-Hop/Rap" => 1, 
@@ -63,8 +63,7 @@ sub new {
     my($class, %args) = @_;
     my %protocol_args;
     foreach my $k ( qw( account_type user_id ds_id gu_id password 
-      deauth_wait_secs DEBUG DEBUG_ID_FILE country home_dir password_token 
-      maybe_dot path_sep ) ) 
+      deauth_wait_secs DEBUG country home_dir maybe_dot path_sep ) ) 
       { $protocol_args{$k} = delete $args{$k} if $args{$k} }
     my $self = $class->SUPER::new(%args);
     $self->{protocol} = \%protocol_args;
@@ -113,7 +112,7 @@ sub request {
             my $h_iviv = $response->header('x-apple-crypto-iv');
             if( $h_twofish ) {
                 my $tf = new Crypt::AppleTwoFish(hexToUchar($h_twofish));
-                $key = $tf->decrypted;
+                $key = $tf->decrypted_for_iTMS;
             }
             elsif($h_protocol == 2) { 
                 $key = decode_base64("ip2tOZ+wFMExvmEYINeIlQ==");
@@ -219,7 +218,7 @@ sub gu_id {
     my $gu_id_file = $self->drms_dir . 'GUID';
     if(-e $gu_id_file) {
         open(my $guidfh, $gu_id_file) 
-          or croak "cannot $gu_id_file: $!";
+          or croak "cannot read $gu_id_file: $!";
         read($guidfh, my $guid, -s $guidfh);
         return $self->{protocol}->{gu_id} = $guid;
     }
@@ -256,6 +255,7 @@ sub save_gu_id {
     my $guid_b64 = encode_base64($guid);
     open(my $outfh, '>>', $self->drms_dir . "GUID") 
       or croak "Cannot save GUID, WRITE DOWN (base64) $guid_b64:  $!";
+    binmode $outfh;
     print $outfh $guid_b64;
     close $outfh;
 }
@@ -273,6 +273,7 @@ sub save_keys {
         $num_new_keys++ unless -e $pathname;
         open(my $kfh, '>', $pathname) 
           or croak "Cannot open $pathname for writing: $!";
+        binmode $kfh;
         print $kfh $v;
         close $kfh;
     }
@@ -297,6 +298,7 @@ sub get_saved_keys {
         next unless $fname =~ /\.(\d{3})$/;
         my $ky = $1;
         open(my $fh, $drms_dir . $fname) or croak "Cannot read $fname: $!";
+        binmode $fh;
         read($fh, my $keyval, -s $fh);
         print "Key value: $keyval\n" 
           if $self->{protocol}->{DEBUG} and $self->{protocol}->{DEBUG} > 1;
@@ -418,12 +420,6 @@ sub login {
     $self->{protocol}->{ds_id} = $auth_response->{dsPersonId};
     croak "Bad dsID from login: $self->{protocol}->{ds_id}" 
       if $self->{protocol}->{ds_id} < 0;
-    if($self->{protocol}->{DEBUG} and $self->{protocol}->{DEBUG_ID_FILE}) {
-        open(my $fh, ">>", $self->{protocol}->{DEBUG_ID_FILE}) 
-            or carp "Cannot open the debug dump file: $!";
-        print $fh $resp->content;
-        close $fh;
-    }
     if($self->{protocol}->{DEBUG} and $self->{protocol}->{DEBUG} > 1) {
         print $resp->content;
         foreach my $ky (sort keys %{$auth_response}) {
@@ -436,7 +432,7 @@ sub login {
 sub authorize {
     my($self) = @_;
     my $keys = $self->get_saved_keys;
-    return $keys if $keys;
+    return $keys if $keys and scalar keys %{$keys} > 0;
     print "Authorizing via iTMS\n" if $self->{protocol}->{DEBUG};   
     my $authorizeMachine = $self->{protocol}->{url_bag}->{authorizeMachine}
       or croak "No URL for authorizeMachine found in bag.";
@@ -449,15 +445,18 @@ sub authorize {
       unless $jingleDocType and $jingleDocType =~ /success$/i;
     print("Authorized guID ", $self->{protocol}->{login_id}, "\n") 
       if $self->{protocol}->{DEBUG};
-    my $twofish = ($dict->{encryptionKeysTwoFish}) ? 1 : 0;
-    foreach my $k ( grep { $_ =~ /^\d+$/ } keys %{$dict} ) {
+    my $twofish = ($dict->{encryptionKeysTwofish}) ? 1 : 0;
+    print "Using ", $twofish? '': 'NO ', "twofish for DRMS and gu_id ", 
+      $self->gu_id, "\n" if $self->{protocol}->{DEBUG};
+    foreach my $k ( sort grep { $_ =~ /^\d+$/ } keys %{$dict} ) {
         my $hkey = $dict->{$k};
-        print "Found key number $k, val $hkey\n" if $self->{protocol}->{DEBUG};
         my $bkey = hexToUchar($hkey);
         if($twofish) {
             my $tf = new Crypt::AppleTwoFish($bkey);
-            $bkey = $tf->decrypted;
+            $bkey = $tf->decrypted_for_DRMS;
         }
+        print "Found key number $k, val $hkey, bin $bkey\n" 
+          if $self->{protocol}->{DEBUG};
         $self->{protocol}->{user_keys}->{$k} = $bkey;
     }
     print "At ", scalar localtime, " ", 
@@ -516,7 +515,8 @@ LWP::UserAgent::iTMS_Client - libwww-perl client for Apple iTunes music store
     
     # search the Store
     
-    my $ua = LWP::UserAgent::iTMS_Client->new;
+    my $ua = LWP::UserAgent::iTMS_Client->new(
+      user_id => 'me@you', password => 'pwd');
     my $listings = $ua->search( song => 'apples' );
     foreach my $album (@{$listings}) { print $album->{songName} }
 
@@ -527,7 +527,6 @@ LWP::UserAgent::iTMS_Client - libwww-perl client for Apple iTunes music store
         user_id => 'name@email.org',
         password => 'password',
         DEBUG => 1,
-        DEBUG_ID_FILE => "debug_id.txt",
         ds_id => 71111111,
     );
     $ua->retrieve_keys_from_iTMS;
@@ -553,6 +552,61 @@ listings and obtaining the user's keys.
 
 =item B<new>
 
+    # set up new instance for anon search
+    my $ua = 
+      LWP::UserAgent::iTMS_Client->new(user_id => 'me@you', password => 'pwd');
+
+    # set up for login
+    my $ua = new LWP::UserAgent::iTMS_Client(
+        account_type => 'apple',
+        user_id => 'name@email.org',
+        password => 'password',
+        DEBUG => 1,
+        gu_id => 'CF1121F1.13F11411.11B1F151.1611F111.1DF11711.11811F19.1011F1A1',
+    );
+
+Create a new LWP::UserAgent::iTMS_Client object.
+Options are:
+    account_type
+        Either 'apple' or 'aol', this determines where the authentication 
+        password is to be checked--on an AOL user database or with Apple's 
+        accounts.
+        
+    user_id (required)
+        User name, usually an email address.
+        
+    ds_id 
+        A user identifier used by iTMS for authentication. May be useful if
+        accessing local key files.
+        
+    gu_id 
+        A user's machine identifier used by iTMS for authorization.
+        
+    password (required)
+        The user's own (user typed, in iTunes) password.
+        
+    DEBUG 
+        A flag to cause debugging information to be printed to stdout.
+    
+    deauth_wait_secs
+      Reserved, not currently implemented. 
+      This is to be a mandatory wait before deauthorizing a machine.
+      
+    country 
+        The country where the user's account is based. Determines purchase 
+        currency, etc.
+    
+    home_dir 
+        The directory where the drms keys subdirectory is located. Generally it
+        may be best to allow the module to locate this by default.
+        
+    maybe_dot 
+        Determines if the drms subdirectory is called '.drms' or 'drms', again,
+        best left to the default.
+    
+    path_sep
+        Generally '/'. Path separator for the local OS.
+    
 =item B<request>
 
 =item B<search>
@@ -567,13 +621,13 @@ This is a development version, so no doubt there are lots of bugs.
 For starters, the searches only work with 'song' and 'all' at the moment. 
 Making LWP look on the internet like a recent copy of iTunes is a bit 
 of a moving target. Please don't use up your 5 iTunes machines with this 
-module, fail to save youe guID strings, have to call iTMS to wipe your 
+module, fail to save your guID strings, have to call iTMS to wipe your 
 authorizations and start over, and then blame us. That is what the
 deauthorize_gu_id routine is for.
 
 =head2 SEE ALSO ON CPAN
     
-=item L<Audio::M4P>, L<Audio::M4P::Atom>, L<Audio::M4PDecrypt>, L<Mac::iTunes>, L<Net::iTMS>
+=item L<LWP::UserAgent>, L<Audio::M4P::QuickTime>, L<Audio::M4P::Decrypt>, L<Mac::iTunes>, L<Net::iTMS>
 
 =head1 AUTHOR 
 

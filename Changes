@@ -1,5 +1,8 @@
 Revision history for Perl module LWP::UserAgent::iTMS_Client
 
-0.01 Fri April 29 2004
-    - original version 
+0.01_01 Thu May 5 2004
+    - development ALPHA version 
+
+0.02 Sun May 8 2005
+    - first general release version
 

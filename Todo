@@ -2,5 +2,6 @@ TODO list for Perl module LWP::UserAgent::iTMS_Client
     - the local key storage/retrieval needs to work on all platforms
     - purchasing and downloading of music should be possible rather
       than just searches and key retrieval
-    
+    - fix searches by artist and composer
+    - make guID retrieval fully compatible
 

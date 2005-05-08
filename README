@@ -4,22 +4,31 @@ LWP::UserAgent::iTMS_Client -- User Agent for the Apple iTunes Music Store
 
 DESCRIPTION
     
+iTMS user agent for LWP
+
 Interact with the iTunes Music Store over the Internet
 
 SYNOPSIS
 
-use LWP::UserAgent::iTMS_Client;
+    use LWP::UserAgent::iTMS_Client;
+    
+    # search the Store
+    
+    my $ua = LWP::UserAgent::iTMS_Client->new;
+    my $listings = $ua->search( song => 'apples' );
+    foreach my $album (@{$listings}) { print $album->{songName} }
 
-my $ua = new LWP::UserAgent::iTMS_Client(
+    # get my authorization keys
 
-
-);
-
-my $response = $ua->request_search(
-);
-
-my $reponse = $ua->get_keys(
-);
+    my $ua = new LWP::UserAgent::iTMS_Client(
+        account_type => 'apple',
+        user_id => 'name@email.org',
+        password => 'password',
+        DEBUG => 1,
+        DEBUG_ID_FILE => "debug_id.txt",
+        ds_id => 71111111,
+    );
+    $ua->retrieve_keys_from_iTMS;
 
 
 
