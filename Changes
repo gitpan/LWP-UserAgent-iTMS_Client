@@ -6,3 +6,10 @@ Revision history for Perl module LWP::UserAgent::iTMS_Client
 0.02 Sun May 8 2005
     - first general release version
 
+0.03 Wed May 11 2005
+    - removed some debugging code
+    - use URI::Escape instead of CGI module
+    - improved searches
+    - added to pod documentation
+
+    

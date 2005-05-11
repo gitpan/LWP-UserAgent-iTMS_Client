@@ -1,21 +1,21 @@
 package LWP::UserAgent::iTMS_Client;
 
 require 5.006;
-use base qw/ LWP::UserAgent /;
-our $VERSION = '0.02';
+use base qw 'LWP::UserAgent';
+our $VERSION = '0.03';
 
 use strict;
 use warnings;
 use Carp;
 use Time::HiRes;
 use XML::Twig;
-use CGI qw/ escapeHTML /;
-use Digest::MD5 qw/ md5_hex /;
+use URI::Escape;
+use Digest::MD5 qw 'md5_hex';
 use Compress::Zlib;
 use Crypt::CBC;
 use Crypt::Rijndael;
 use Crypt::AppleTwoFish;
-use MIME::Base64 qw/ encode_base64 decode_base64 /;
+use MIME::Base64 qw 'encode_base64 decode_base64';
 
 # account type determines ID and password (apple vs AOL)
 my %account_type_code = ( apple => 0, aol => 1 );
@@ -44,7 +44,7 @@ my %country_code = (
 my %search_topics = (   album => 'albumTerm', artist => 'artistTerm', 
                         composer => 'composerTerm', song => 'songTerm', 
                         genre => 'genreIndex', all => 'term' );
-                        
+                    
 my $all_search_url = 'http://phobos.apple.com/WebObjects/MZSearch.woa/wa/com.apple.jingle.search.DirectAction/search?';
 my $advanced_search_url = 'http://phobos.apple.com/WebObjects/MZSearch.woa/wa/advancedSearchResults?';
 
@@ -57,52 +57,48 @@ my %iTMS_genres =   ( "All Genres" => 1, Alternative => 1, Audiobooks => 1,
   Soundtrack => 1, 'Spoken Word' => 1, Vocal => 1, World => 1, 
 );
 
+#  for buying
+my $buy_url = 'https://phobos.apple.com/WebObjects/MZFinance.woa/wa/buyProduct?';
+
+# error handling--croak by default
+my $_error = sub { croak shift };
+
 #************** methods in common with LWP::UserAgent ***********************#
 
 sub new {
     my($class, %args) = @_;
     my %protocol_args;
-    foreach my $k ( qw( account_type user_id ds_id gu_id password 
-      deauth_wait_secs DEBUG country home_dir maybe_dot path_sep ) ) 
+    foreach my $k ( qw( account_type user_id ds_id gu_id password error_handler 
+      deauth_wait_secs country home_dir maybe_dot path_sep download_dir ) ) 
       { $protocol_args{$k} = delete $args{$k} if $args{$k} }
     my $self = $class->SUPER::new(%args);
     $self->{protocol} = \%protocol_args;
-    $self->{protocol}->{DEBUG}  ||= 0;
     $self->{protocol}->{home_dir} ||= $ENV{APPDATA} || $ENV{HOME} || '~';
     $self->{protocol}->{maybe_dot} ||= ($^O =~ /Win/) ? '' : '.';
     $self->{protocol}->{path_sep} ||= '/';
     $self->{protocol}->{account_type_code} = 
       $account_type_code{ lc $self->{protocol}->{account_type} } || 0;
-    $self->{protocol}->{deauth_wait_secs} = 240 + int rand(120);
+    $self->{protocol}->{deauth_wait_secs} ||= 90 + int rand(120);
     $self->{protocol}->{login_id} = 
-            $self->{protocol}->{user_id} || '?? unknown ??';
-    $self->{protocol}->{max_machines} = -1;
+      $self->{protocol}->{user_id} || '?? unknown ??';
     $self->{protocol}->{gu_id} ||= $self->gu_id;
     $self->{protocol}->{ds_id} ||= -1;
-    croak "Need user_id and password in call to new for iTMS_Client"
-      unless $self->{protocol}->{user_id} and $self->{protocol}->{password};
+    $self->{protocol}->{download_dir} ||= $self->{protocol}->{home_dir} .
+      "/My Documents/My Music/iTunes/iTunes Music";
+    $self->{protocol}->{error_handler} ||= $_error;
     return $self;
 }
 
 sub request {
     my($self, $url, $params) = @_;
     # create request and send it via the base class method.
-    print "In request method, url is: $url and params are: $params\n\n" 
-      if $self->{protocol}->{DEBUG};
     my $hdr = $self->make_request_header($url);
     my $request = new HTTP::Request('GET' => $url . $params, $hdr);
-    print "Headers for request: ", $hdr->as_string, "\n"
-      if $self->{protocol}->{DEBUG} and $self->{protocol}->{DEBUG} > 1;
     my $response = $self->SUPER::request($request);
     my $content;
     if ($response->is_success) {
         # process and decrypt or decompress the response.
         $self->{protocol}->{content} = $response->content;
-        if($self->{protocol}->{DEBUG} and $self->{protocol}->{DEBUG} > 1) {
-            print "Response headers:\n";
-            my @flds = $response->header_field_names();
-            foreach(@flds) { print "$_ => ", $response->header($_), "\n" }
-        }
         my $encoding = $response->content_encoding;
         return $response unless $encoding;
         if($encoding =~ /x-aes-cbc/) {
@@ -120,21 +116,23 @@ sub request {
             elsif($h_protocol == 3) { 
                 $key = decode_base64("mNHiLKoNir1l0UOtJ1pe5w==");
             }
-            else { croak "Bad encoding protocol in response from $url$params" }
+            else { 
+                $self->err("Bad encoding protocol in response from $url$params");
+            }
             if ( $h_iviv ) {
                 my $alg = new Crypt::Rijndael($key, Crypt::Rijndael::MODE_CBC);
                 $alg->set_iv(hexToUchar($h_iviv));
                 $response->content($alg->decrypt($response->content));
             }
-            else { croak "No aes crypto-iv given in response from $url$params" }
+            else { 
+                $self->err("No aes crypto-iv given in response from $url$params");
+            }
         }
         if($encoding =~ /gzip/) { 
             $response->content(Compress::Zlib::memGunzip($response->content));
-            print "Gzip uncompressed content:\n", $response->content, "\n\n"
-              if $self->{protocol}->{DEBUG} > 1;
         }
     }
-    else { croak $response->status_line . "\n" }
+    else { $self->err($response->status_line . "\n") }
     return $response;
 }
 
@@ -145,6 +143,7 @@ sub search {
     my $search_url = $advanced_search_url;
     my $params = '';
     my $loops = 0;
+    my $had_song = 0;
     while( my($type, $term) = each %search_terms ) {
         if($type eq 'all') {
             $search_url = $all_search_url;
@@ -152,9 +151,11 @@ sub search {
             last;
         }
         $params .=  '&' if $loops;
-        $params .= $search_topics{$type} . '=' . escapeHTML($term);
+        $had_song = 1 if $type eq 'song';
+        $params .= $search_topics{$type} . '=' . uri_escape($term);
         $loops++;
     }
+    $params .= '&songTerm=&sp;' unless $had_song; # kludge for iTMS server
     my $results = $self->request($search_url, $params);
     return $self->parse_dict($results->content, 'array/dict');
 }
@@ -163,19 +164,31 @@ sub retrieve_keys_from_iTMS {
     my ($self) = @_;
     my $gu_id;
     my $save_id = 1;
-    if($self->{protocol}->{gu_id} and $self->{protocol}->{gu_id} ne '-1') { 
+    if($self->{protocol}->{gu_id}) { 
         $save_id = 0;
         $gu_id = $self->{protocol}->{gu_id};
     }
-    else {
-        $gu_id = $self->gu_id || $self->make_gu_id;
-    }
+    else { $gu_id = $self->gu_id || $self->make_gu_id; }
     my $response_hashref = $self->login;
     my $auth_info = $response_hashref->{jingleDocType};
-    croak "Machine authorization failed!" if $auth_info !~ /Success/i;
+    $self->err("Machine authorization failed!") if $auth_info !~ /Success/i;
     $self->save_gu_id($gu_id) if $save_id;   
     $self->authorize;
     $self->save_keys;
+}
+
+sub retrieve_keys_with_temp_id {
+    my ($self, $callback) = @_;
+    $self->gu_id(0);
+    my $gu_id = $self->make_gu_id;
+    my $response_hashref = $self->login;
+    my $auth_info = $response_hashref->{jingleDocType};
+    $self->err("Machine authorization failed!") if $auth_info !~ /Success/i;
+    $self->authorize;
+    $self->save_keys;
+    print "Please wait for deauthorization of temporary machine...";
+    progress($self->{protocol}->{deauth_wait_secs}, $callback);
+    $self->deauthorize_gu_id($self->{protocol}->{gu_id});
 }
 
 sub deauthorize_gu_id {
@@ -188,7 +201,19 @@ sub deauthorize_gu_id {
     $self->deauthorize;
 }
 
-#******************  internal class methods ****************************/
+sub purchase {
+    my($self, $song_id) = @_;
+    return;   # FIXME
+#    my $purchase_url = $buy_url . buyparams . '&creditBalance=' . 
+#      $self->{protocol}->creditBalance . '&creditDisplay=' . 
+#      urllib.quote(self.dspbalance) . '&freeSongBalance=' . 
+#      $self->{protocol}->{fsbalance} .
+#      '&guid=' . $self->gu_id . 
+#      '&rebuy=false&buyWithoutAuthorization=true&wasWarnedAboutFirstTimeBuy=true';
+      
+}
+
+#******************  internal class methods ****************************#
 
 sub make_request_header {
     my($self, $url) = @_;
@@ -218,7 +243,7 @@ sub gu_id {
     my $gu_id_file = $self->drms_dir . 'GUID';
     if(-e $gu_id_file) {
         open(my $guidfh, $gu_id_file) 
-          or croak "cannot read $gu_id_file: $!";
+          or $self->err("Cannot read $gu_id_file: $!");
         read($guidfh, my $guid, -s $guidfh);
         return $self->{protocol}->{gu_id} = $guid;
     }
@@ -252,11 +277,11 @@ sub drms_dir {
 sub save_gu_id {
     # put guID for the auth in a safe place so can de-auth later
     my($self, $guid) = @_;
-    my $guid_b64 = encode_base64($guid);
+    return unless $guid and index($guid, '-') < 0;
     open(my $outfh, '>>', $self->drms_dir . "GUID") 
-      or croak "Cannot save GUID, WRITE DOWN (base64) $guid_b64:  $!";
+      or $self->err("Cannot save GUID, WRITE DOWN (base64) $guid:  $!");
     binmode $outfh;
-    print $outfh $guid_b64;
+    print $outfh $guid;
     close $outfh;
 }
 
@@ -272,7 +297,7 @@ sub save_keys {
         my $pathname = sprintf("%s.%03d", $basename, $k); 
         $num_new_keys++ unless -e $pathname;
         open(my $kfh, '>', $pathname) 
-          or croak "Cannot open $pathname for writing: $!";
+          or $self->err("Cannot open $pathname for writing: $!");
         binmode $kfh;
         print $kfh $v;
         close $kfh;
@@ -287,26 +312,20 @@ sub get_saved_keys {
     my $key_hashref = $self->{protocol}->{user_keys};
     return $key_hashref if $key_hashref and scalar %{$key_hashref};
     my $drms_dir = $self->drms_dir;
-    opendir(my $dh, $drms_dir) or croak "Cannot open DRMS directory: $!";
+    opendir(my $dh, $drms_dir) or $self->err("Cannot open DRMS directory: $!");
     my @keyfile = readdir $dh;
     close $dh;
     @keyfile = grep { /(\w{8})\.\d{3}/ and ($1 eq $hex_ds_id) } @keyfile;
     my %keys;
-    print "Looking for ", scalar @keyfile, " key files.\n"
-      if $self->{protocol}->{DEBUG};
     foreach my $fname (@keyfile) {
         next unless $fname =~ /\.(\d{3})$/;
         my $ky = $1;
-        open(my $fh, $drms_dir . $fname) or croak "Cannot read $fname: $!";
+        open(my $fh, $drms_dir . $fname) or carp "Cannot read $fname: $!";
         binmode $fh;
         read($fh, my $keyval, -s $fh);
-        print "Key value: $keyval\n" 
-          if $self->{protocol}->{DEBUG} and $self->{protocol}->{DEBUG} > 1;
         close $fh;
-        $self->{protocol}->{user_keys}->{$ky} = $keyval;
+        $self->{protocol}->{user_keys}->{$ky} = $keyval if $keyval;
     }
-    print "Found on drive: ", scalar keys %{$self->{protocol}->{user_keys}}, 
-      " total keys.\n" if $self->{protocol}->{DEBUG};   
     return $self->{protocol}->{user_keys};
 }
 
@@ -331,39 +350,28 @@ sub parse_dict {
     my($self, $content, $path) = @_;
     my @entries;
     my $entry_index = -1;
-    my $twig = new XML::Twig( 
-        TwigHandlers => { $path => sub {
-            my $elt = $_;
-            $entry_index++;
-            while( $elt = $elt->next_elt('key') ) {
-                my $key = $elt->text;
-                my $next = $elt->next_elt;
-                last if $next->name =~ /dict/;
-                my $value = ($next) ? $next->next_elt_text : 1;
-                $entries[$entry_index]->{$key} = $value;
-            }
-        } }, 
-    );
-    $twig->parse($content);
-    if($self->{protocol}->{DEBUG} and $self->{protocol}->{DEBUG} > 1) {
-        print "parse_dict results: There are ", scalar @entries, " results.\n";
-        foreach my $hr (@entries) {
-            print "\n\n";
-            while(my ($k, $v) = each %{$hr} ) {
-                print "$k => $v \n";
-            }
+    my $parser = sub {
+        my $elt = $_;
+        $entry_index++;
+        while( $elt = $elt->next_elt('key') ) {
+            my $key = $elt->text;
+            my $next = $elt->next_elt;
+            last if $next->name =~ /dict/;
+            my $value = ($next) ? $next->next_elt_text : 1;
+            $entries[$entry_index]->{$key} = $value;
         }
-    }
+    };
+    my $twig = new XML::Twig( TwigHandlers => { $path => $parser } );
+    $twig->parse($content);
     # return reference to an array of hashrefs.
     # each hashref is a found item in a dict
     return \@entries;
 }
 
-
 sub parse_xml_response {
     my($self, $xml_response_text) = @_;
     my %url_bag_read;    
-    my $key_string_reader = sub {
+    my $parser = sub {
         my($twig, $elm) = @_;
         my($key, $string);
         while( $elm = $elm->next_elt('key') ) {
@@ -374,58 +382,42 @@ sub parse_xml_response {
             $elm = $string;
         } 
     };
-    my $twig = new XML::Twig( Twig_Handlers => 
-      { 'plist/dict' => $key_string_reader } );
+    my $twig = new XML::Twig( Twig_Handlers => { 'plist/dict' => $parser } );
     $twig->parse($xml_response_text);
-    if($self->{protocol}->{DEBUG} and $self->{protocol}->{DEBUG} > 1) {
-        foreach my $k (keys %url_bag_read) { 
-            print "$k : $url_bag_read{$k} \n";
-        }
-    }
     return \%url_bag_read;
 }
 
 sub login {
     my($self) = @_;
+    $self->err("Need user_id and password in call to login for iTMS_Client") 
+      unless $self->{protocol}->{user_id} and $self->{protocol}->{password};
     my $user_id = $self->{protocol}->{user_id};
     my $password = $self->{protocol}->{password};
     my $account_type = $self->{protocol}->{account_type_code};
     my $gu_id = $self->gu_id || $self->make_gu_id;
-    croak "No guID for login" unless $gu_id;
-    print "iTMS login: user $user_id, password length ", length $password, "\n"
-      if $self->{protocol}->{DEBUG};
+    $self->err("No guID for login") unless $gu_id;
     my $resp = $self->request("http://phobos.apple.com/storeBag.xml", '')
-      or croak "Cannot reach iTMS key server phobos.apple.com via network";   
+      or $self->err("Cannot reach iTMS key server phobos.apple.com via network");   
     $resp = $self->request("http://phobos.apple.com/secureBag.xml", '')
-      or croak "Cannot retrieve secure bag from iTMS over network";
+      or $self->err("Cannot retrieve secure bag from iTMS over network");
     $self->{protocol}->{url_bag} = $self->parse_xml_response($resp->content);
     my $authAccount = $self->{protocol}->{url_bag}->{authenticateAccount}
-      or croak "URL for 'authenticateAccount' not found in iTMS bag.";
+      or $self->err("URL for 'authenticateAccount' not found in iTMS bag.");
     $self->{protocol}->{login_id} = $user_id;
-    print "Login progress: Authenticating user $user_id\n" 
-      if $self->{protocol}->{DEBUG};
-    my $cgi_params = '?appleId=' . escapeHTML($user_id) . '&password=' .
-      escapeHTML($password) . '&accountKind=' . $account_type . 
-      '&attempt=1&guid=' . escapeHTML($self->gu_id || $self->make_gu_id);
+    my $cgi_params = '?appleId=' . uri_escape($user_id) . '&password=' .
+      uri_escape($password) . '&accountKind=' . $account_type . 
+      '&attempt=1&guid=' . uri_escape($self->gu_id || $self->make_gu_id);
     $resp = $self->request($authAccount, $cgi_params)
-      or croak "Cannot authenticate user $user_id";
+      or $self->err("Cannot authenticate user $user_id");
     my $auth_response = $self->parse_xml_response($resp->content);
     my $jingleDocType = $auth_response->{jingleDocType};
     my $customer_message = $auth_response->{customerMessage};
     if("authenticationsuccess" ne lc($jingleDocType)) 
-      { croak "Login failure! Message: $customer_message" }
+      { $self->err("Login failure! Message: $customer_message") }
     $self->{protocol}->{password_token} = $auth_response->{passwordToken};
-    print "password token is ", $self->{protocol}->{password_token}, "\n"
-          if $self->{protocol}->{DEBUG};
     $self->{protocol}->{ds_id} = $auth_response->{dsPersonId};
-    croak "Bad dsID from login: $self->{protocol}->{ds_id}" 
+    $self->err("Bad dsID from login: $self->{protocol}->{ds_id}") 
       if $self->{protocol}->{ds_id} < 0;
-    if($self->{protocol}->{DEBUG} and $self->{protocol}->{DEBUG} > 1) {
-        print $resp->content;
-        foreach my $ky (sort keys %{$auth_response}) {
-            print "$ky => ", $auth_response->{$ky}, "\n";
-        }
-    }
     return $auth_response;
 }
 
@@ -433,21 +425,16 @@ sub authorize {
     my($self) = @_;
     my $keys = $self->get_saved_keys;
     return $keys if $keys and scalar keys %{$keys} > 0;
-    print "Authorizing via iTMS\n" if $self->{protocol}->{DEBUG};   
     my $authorizeMachine = $self->{protocol}->{url_bag}->{authorizeMachine}
-      or croak "No URL for authorizeMachine found in bag.";
+      or $self->err("No URL for authorizeMachine found in bag.");
     my $cgi_params = "?guid=" . $self->{protocol}->{gu_id};    
     my $resp = $self->request($authorizeMachine, $cgi_params)
-      or croak "Failed to properly access authorizing server over network";
+      or $self->err("Failed to properly access authorizing server over network");
     my $dict = $self->parse_dict($resp->content, 'plist/dict')->[0];
     my $jingleDocType = $dict->{jingleDocType};
-    croak( "Authorization failure for guID ", $self->{protocol}->{gu_id} )
+    $self->err("Authorization failure for guID " . $self->{protocol}->{gu_id})
       unless $jingleDocType and $jingleDocType =~ /success$/i;
-    print("Authorized guID ", $self->{protocol}->{login_id}, "\n") 
-      if $self->{protocol}->{DEBUG};
     my $twofish = ($dict->{encryptionKeysTwofish}) ? 1 : 0;
-    print "Using ", $twofish? '': 'NO ', "twofish for DRMS and gu_id ", 
-      $self->gu_id, "\n" if $self->{protocol}->{DEBUG};
     foreach my $k ( sort grep { $_ =~ /^\d+$/ } keys %{$dict} ) {
         my $hkey = $dict->{$k};
         my $bkey = hexToUchar($hkey);
@@ -455,13 +442,8 @@ sub authorize {
             my $tf = new Crypt::AppleTwoFish($bkey);
             $bkey = $tf->decrypted_for_DRMS;
         }
-        print "Found key number $k, val $hkey, bin $bkey\n" 
-          if $self->{protocol}->{DEBUG};
         $self->{protocol}->{user_keys}->{$k} = $bkey;
     }
-    print "At ", scalar localtime, " ", 
-      scalar keys %{$self->{protocol}->{user_keys}}, 
-      " keys retrived from server.\n" if $self->{protocol}->{DEBUG};
     # user_keys references a hash, base index 1, of binary keys
     # with hash keys 1 .. number of keys
     return $self->{protocol}->{user_keys};
@@ -469,22 +451,28 @@ sub authorize {
 
 sub deauthorize {
     my($self) = @_;
-    print "Deauthorizing user ", $self->{protocol}->{gu_id}, "\n"
-      if $self->{protocol}->{DEBUG};
     $self->login;
     my $deauth_url = $self->{protocol}->{url_bag}->{deauthorizeMachine} 
-      or croak "URL for 'deauthorizeMachine' not found in url bag.";
-    my $cgi_params = "?guid=" . escapeHTML($self->{protocol}->{gu_id});
+      or $self->err("URL for 'deauthorizeMachine' not found in url bag.");
+    my $cgi_params = "?guid=" . uri_escape($self->{protocol}->{gu_id});
     my $resp = $self->request($deauth_url, $cgi_params) 
-      or croak "Could not access $deauth_url over network";
+      or $self->err("Could not access $deauth_url over network");
     my $auth_response = $self->parse_xml_response($resp->content);
     my $jingleDocType = $auth_response->{jingleDocType};
     my $customerMessage = $auth_response->{customerMessage};
     unless( lc($jingleDocType) eq 'success' ) 
-      { croak "Error: Failed to deauthorize user $self->{gu_id}" }
-    print "Deauthorized user ", $self->{protocol}->{gu_id}, "\n"
-      if $self->{protocol}->{DEBUG};
-    print "Deauthorizing complete" if $self->{protocol}->{DEBUG};
+      { $self->err("Error: Failed to deauthorize user $self->{gu_id}") }
+}
+
+sub download_songs {
+    my($self) = @_;
+    # download all pending downloadable music.
+    
+}
+
+sub err { 
+    my($self, $msg) = @_; 
+    $self->{protocol}->{error_handler}->($msg);
 }
 
 #************* non-method helper functions ****************#
@@ -504,6 +492,27 @@ sub hexToUchar {
     return pack 'C*', map { hex } $hex_string =~ m/../g;
 }
 
+sub progress {
+    my($duration, $callback) = @_;
+    my $increment = 5;
+    local $| = 1;
+    my $bar = sub { 
+        my $state = shift;
+        my $char = '=';
+        if   ($state =~ /begin/i) { print  "\n", 'Progress: |   ' }
+        elsif($state =~ /end/i)   { print '| :Done!', "\n" }
+        else { printf( "\x08\x08\x08%s%02d%%", $char, $state ) }
+    };
+    $callback ||= $bar;
+    my $iters = $duration / $increment;
+    $callback->('begin');
+    for(my $i = 0; $i < $iters; $i++) { 
+        sleep $increment;
+        my $percent = int(100 * $i / $iters );
+        $callback->($percent);
+    }
+    $callback->('end');
+}
 
 =head1 NAME
 
@@ -513,21 +522,24 @@ LWP::UserAgent::iTMS_Client - libwww-perl client for Apple iTunes music store
 
     use LWP::UserAgent::iTMS_Client;
     
-    # search the Store
-    
+    # search the Store   
     my $ua = LWP::UserAgent::iTMS_Client->new(
       user_id => 'me@you', password => 'pwd');
+    
     my $listings = $ua->search( song => 'apples' );
     foreach my $album (@{$listings}) { print $album->{songName} }
 
-    # get my authorization keys
+    $listings = $ua->search(artist => 'Vangelis', song => 'long', 
+      genre => 'Electronic');
+    foreach my $a (@{$results2}) { 
+      foreach (sort keys %$a) { print "$_ => ", $a->{$_}, "\n" } 
+    }
 
+    # get my authorization keys
     my $ua = new LWP::UserAgent::iTMS_Client(
         account_type => 'apple',
         user_id => 'name@email.org',
         password => 'password',
-        DEBUG => 1,
-        ds_id => 71111111,
     );
     $ua->retrieve_keys_from_iTMS;
 
@@ -548,7 +560,7 @@ updated.
 The initial versions of this user agent will concentrate on browsing the 
 listings and obtaining the user's keys.
 
-=head1 METHODS  (to be finished later)
+=head1 METHODS
 
 =item B<new>
 
@@ -561,12 +573,12 @@ listings and obtaining the user's keys.
         account_type => 'apple',
         user_id => 'name@email.org',
         password => 'password',
-        DEBUG => 1,
         gu_id => 'CF1121F1.13F11411.11B1F151.1611F111.1DF11711.11811F19.1011F1A1',
     );
 
 Create a new LWP::UserAgent::iTMS_Client object.
 Options are:
+
     account_type
         Either 'apple' or 'aol', this determines where the authentication 
         password is to be checked--on an AOL user database or with Apple's 
@@ -585,9 +597,6 @@ Options are:
     password (required)
         The user's own (user typed, in iTunes) password.
         
-    DEBUG 
-        A flag to cause debugging information to be printed to stdout.
-    
     deauth_wait_secs
       Reserved, not currently implemented. 
       This is to be a mandatory wait before deauthorizing a machine.
@@ -609,24 +618,79 @@ Options are:
     
 =item B<request>
 
+Sends a request to the iTunes Music Store. Handles encryption and compression, then 
+returns an HTTP::Response object, as an overloaded method of the base LWP::UserAgent. 
+Generally not called directly unless you know what you are doing. 
+
 =item B<search>
+
+use LWP::UserAgent::iTMS_Client;
+
+my $ua = LWP::UserAgent::iTMS_Client->new;
+
+my $results1 = $ua->search(song => 'Day', composer => 'Lennon');
+print "\nResults for song => regret, artist => New Order:\n";
+foreach my $a (@{$results1}) { 
+    foreach (sort keys %$a) { print "$_ => ", $a->{$_}, "\n" } 
+}
+
+my $results2 = $ua->search(artist => 'Vangelis', song => 'long ago');
+print "\nResults for song => apples:\n";
+foreach my $a (@{$results2}) { 
+   foreach (sort keys %$a) { print "$_ => ", $a->{$_}, "\n" } 
+}
+
+The following types of searches should be supported: album, artist, composer, 
+song, genre, all. If used, 'all' should override other specifications.
 
 =item B<retrieve_keys_from_iTMS>
 
+Get the keys from the Store. Attempts to be compatible with key locations used 
+by default by the Videolan project's media player (FairKeys compatibility). 
+This should generally be used with a gu_id known by the user, preferentially 
+one given as a gu_id => 11111111.11111111.11111111.11111111.11111111.11111111
+(6 8-digit hex numbers separated by periods) argument to new.
+
 =item B<deauthorize_gu_id>
+
+$ua->deauthorize_gu_id($id);
+
+Deauthorize the machine used to get the keys.
+
+
+=item B<retrieve_keys_with_temp_id>
+
+ua->retrieve_keys_with_temp_id(\&callback);
+  
+Create a temporary machine ID (you need to have one of your 5 machine 
+useages for iTunes available), get the keys with this virtual machine's 
+authorization, then deauthorize. Note that since this may result in an 
+additional key being created, you should limit the number of times you 
+do this. If you generally only purchase music on one or two machines 
+that do not change ID's, and only play copied music on your other 
+(iPod?) machines, once downloading your keys may be enough. The program
+will display a progress bar betwwen key retrieval and deauthorization. The
+optional argument is to allow custom display of the wait period, which by
+default prints to stdout. The optional callback routine must accept a single 
+argument which may have the values 'begin', an integer between 0 and 100, 
+and 'end'.
+
+=item B<purchase>
+
+  $ua->purchase($song_id);
+  
+  Not yet working, will be soon we hope
 
 =head1 BUGS
 
-This is a development version, so no doubt there are lots of bugs. 
-For starters, the searches only work with 'song' and 'all' at the moment. 
-Making LWP look on the internet like a recent copy of iTunes is a bit 
-of a moving target. Please don't use up your 5 iTunes machines with this 
-module, fail to save your guID strings, have to call iTMS to wipe your 
-authorizations and start over, and then blame us. That is what the
-deauthorize_gu_id routine is for.
+The searches do not work if both 'composer' and 'artist' are specified.
 
-=head2 SEE ALSO ON CPAN
-    
+Overuse of the B<purchase> routine might allow you to spend more on music 
+than you intended. This might be a bug, from the perspective of your budget. 
+Enjoy :).
+
+=head1 SEE ALSO
+
 =item L<LWP::UserAgent>, L<Audio::M4P::QuickTime>, L<Audio::M4P::Decrypt>, L<Mac::iTunes>, L<Net::iTMS>
 
 =head1 AUTHOR 

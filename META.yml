@@ -1,12 +1,11 @@
 # http://module-build.sourceforge.net/META-spec.html
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         LWP-UserAgent-iTMS_Client
-version:      0.02
+version:      0.03
 version_from: lib/LWP/UserAgent/iTMS_Client.pm
 installdirs:  site
 requires:
     Carp:                          0
-    CGI:                           0
     Compress::Zlib:                0
     Crypt::AppleTwoFish:           0.02
     Crypt::CBC:                    0
@@ -15,6 +14,7 @@ requires:
     MIME::Base64:                  0
     Test::More:                    0
     Time::HiRes:                   0
+    URI::Escape:                   0
     XML::Twig:                     0
 
 distribution_type: module
