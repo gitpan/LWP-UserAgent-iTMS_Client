@@ -12,4 +12,8 @@ Revision history for Perl module LWP::UserAgent::iTMS_Client
     - improved searches
     - added to pod documentation
 
-    
+0.04 Mon May 15 2005
+    - pod doc corrections
+    - added purchase and download_songs and preview methods (alpha versions)
+    - kludged around some server peculiarities in searches
+    - fixed the serches as much as can be done given server CGI
