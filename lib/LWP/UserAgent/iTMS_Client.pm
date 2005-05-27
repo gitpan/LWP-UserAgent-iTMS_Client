@@ -2,7 +2,7 @@ package LWP::UserAgent::iTMS_Client;
 
 require 5.006;
 use base 'LWP::UserAgent';
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 use strict;
 use warnings;
@@ -219,7 +219,6 @@ sub deauthorize_gu_id {
     $self->deauthorize;
 }
 
-# This one is in ALPHA
 # buy music from iTMS--using an already signed up account 
 sub purchase {
     my($self, $entry) = @_;
@@ -252,10 +251,8 @@ sub purchase {
     return $self->{protocol}->{downloadable};
 }
 
-# This one is in ALPHA
-# download purchased music not yet gotten from iTMS
-# need a list of music before calling this, via purchase or 
-# get_pending_downloads routines
+# download purchased music not yet gotten from iTMS 
+# song list of hashes is in $self->{protocol}->{downloadable}
 sub download_songs {
     my($self) = @_;
     foreach my $download_url ( keys %{$self->{protocol}->{downloadable}} ) {
@@ -280,7 +277,7 @@ sub download_songs {
             print $new_fh $decoded;
             close $new_fh;
             my $pathname = $path . $sep . $fname;
-            my $qt = new M4P::Quicktime(file => $pathname);
+            my $qt = new M4P::QuickTime(file => $pathname);
             $qt->iTMS_MetaInfo($info);
             $qt->WriteFile($pathname);
         }
@@ -291,7 +288,6 @@ sub download_songs {
     }
 }
 
-# This one is in ALPHA
 # get a list of songs we have purchased but not signed off on downloading yet
 sub get_pending_downloads {
     my($self) = @_;
@@ -312,7 +308,6 @@ sub get_pending_downloads {
     return $self->download_songs;
 }
 
-# This one is in pre-ALPHA
 # Get a song preview from preview URL returned with a search
 sub preview {
     my($self, $preview_song) = @_;
@@ -818,24 +813,24 @@ listings and obtaining the user's keys.
 
 =item B<purchase>
 
-    $ua->purchase($song_id);  # # This one is in ALPHA
+    $ua->purchase($song_id);  # # 
   
     Purchase and download a song, by song id number or 'songId' as a search 
-    result (use search to find the song and then get the songId).
+    result (use search to find the song and then get the songId from the 
+    search result data structure, or "dict" hash reference).
 
 =item B<download_songs>
 
-    $ua->download_songs; # # This one is in ALPHA
+    $ua->download_songs; # # 
 
     Download any songs pending for the user, including those just purchased.
 
 =item B<preview>
 
-    # This one is in ALPHA
     $ua->preview($song);
     
     Download a preview for a song entry, if available. $song is a reference
-    to a hash for a song returned by the search method.
+    to a hash data for a song returned by the search method.
 
 =head1 BUGS
 
