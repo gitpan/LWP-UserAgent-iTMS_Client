@@ -2,7 +2,7 @@ package LWP::UserAgent::iTMS_Client;
 
 require 5.006;
 use base 'LWP::UserAgent';
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 use strict;
 use warnings;
@@ -86,7 +86,7 @@ sub new {
       $self->{protocol}->{user_id} || '?? unknown ??';
     $self->{protocol}->{gu_id} ||= $self->gu_id;
     $self->{protocol}->{ds_id} ||= -1;
-    $self->{protocol}->{download_dir} ||= $self->{protocol}->{home_dir} .
+    $self->{protocol}->{download_dir} ||= $ENV{USERPROFILE} .
       "/My Documents/My Music/iTunes/iTunes Music";
     $self->{protocol}->{error_handler} ||= $_error;
     return $self;
@@ -174,6 +174,44 @@ sub search {
     return $self->parse_dict($results->content, 'array/dict');
 }
 
+# log in to iTMS
+sub login {
+    my($self) = @_;
+    $self->err("Need user_id and password in call to login for iTMS_Client") 
+      unless $self->{protocol}->{user_id} and $self->{protocol}->{password};
+    my $user_id = $self->{protocol}->{user_id};
+    my $password = $self->{protocol}->{password};
+    my $account_type = $self->{protocol}->{account_type_code};
+    my $gu_id = $self->gu_id || $self->make_gu_id;
+    $self->err("No guID for login") unless $gu_id;
+    my $resp = $self->request("http://phobos.apple.com/storeBag.xml", '')
+      or $self->err("Cannot reach iTMS key server phobos.apple.com via network");   
+    $self->{protocol}->{store_bag} = $resp->content;
+    $resp = $self->request("http://phobos.apple.com/secureBag.xml", '')
+      or $self->err("Cannot retrieve secure bag from iTMS over network");
+    $self->{protocol}->{secure_bag} = $self->parse_xml_response($resp->content);
+    my $authAccount = $self->{protocol}->{secure_bag}->{authenticateAccount}
+      or $self->err("URL for 'authenticateAccount' not found in secure bag.");
+    $self->{protocol}->{login_id} = $user_id;
+    my $cgi_params = '?appleId=' . uri_escape($user_id) . '&password=' .
+      uri_escape($password) . '&accountKind=' . $account_type . 
+      '&attempt=1&guid=' . uri_escape($self->gu_id || $self->make_gu_id);
+    $resp = $self->request($authAccount, $cgi_params)
+      or $self->err("Cannot authenticate user $user_id");
+    my $auth_response = $self->parse_xml_response($resp->content);
+    my $customer_message = $auth_response->{customerMessage};
+    my $jingleDocType = $auth_response->{jingleDocType};
+    $self->err("Login failure! Message: $customer_message")
+      unless $jingleDocType and $jingleDocType =~ /Success$/i;
+    $self->{protocol}->{password_token} = $auth_response->{passwordToken};
+    $self->{protocol}->{ds_id} = $auth_response->{dsPersonId};
+    $self->{protocol}->{credit_balance} = $auth_response->{creditBalance};
+    $self->{protocol}->{credit_display} = $auth_response->{creditDisplay};
+    $self->{protocol}->{free_song_balance} = $auth_response->{freeSongBalance};
+    $self->{protocol}->{authentication} = $auth_response; 
+    return $auth_response;
+}
+
 # get user's iTMS keys--useful for Linux music players like 
 # MPlayer or vlc that need user keys to play m4p's
 sub retrieve_keys_from_iTMS {
@@ -240,9 +278,9 @@ sub purchase {
         $self->err( "Failed to purchase song $entry->{songId}, 
           $entry->{songName}: " . $dict->{explanation} ) 
           unless $result_type and $result_type =~ /Success/i;
-        # downloadable is a hash of hashes keyed by download key
-        my $download_url = $dict->{URL} . '?downloadKey=' . $dict->{downloadKey};
-        $self->{protocol}->{downloadable}->{$download_url} = $dict;
+        # downloadable is a hash of hashes keyed by download params key
+        my $download_param = '?downloadKey=' . $dict->{downloadKey};
+        $self->{protocol}->{downloadable}->{$download_param} = $dict;
     }
     else { 
         $self->err("Failed in purchase request $buy_url$buy_request_params");
@@ -253,20 +291,22 @@ sub purchase {
 
 # download purchased music not yet gotten from iTMS 
 # song list of hashes is in $self->{protocol}->{downloadable}
+# this is not working yet on some platforms, gives a 403 error-- FIXME
 sub download_songs {
     my($self) = @_;
-    foreach my $download_url ( keys %{$self->{protocol}->{downloadable}} ) {
-        my $info = $self->{protocol}->{downloadable}->{$download_url};
+    while(my($downloadKey, $info) = each %{$self->{protocol}->{downloadable}}) {
         my $key = $info->{encryptionKey};
-        $key = hexToUint($key) if length($key) == 32;
+        $key = hexToUchar($key) if length($key) == 32;
         next unless length($key) == 16;
+        my $url = $info->{URL};
+        my $response = $self->request($url, $downloadKey);
+        next unless $response->is_success;
         my $iviv = decode_base64("JOb1Q/OHEFarNPJ/Zf8Adg==");
-        my $response = $self->request($download_url);
-        next unless $response->is_success;       
         my $alg = new Crypt::Rijndael($key, Crypt::Rijndael::MODE_CBC);
         $alg->set_iviv($iviv);
         my $decoded = $alg->decrypt( $response->content, 0, 
           int(length($response->content) / 16) * 16 );
+        my $header = pack "Na8N", 8, 'ftypM4A ', length $decoded;
         my $sep = $self->{protocol}->{path_sep};
         my $path = $self->{protocol}->{download_dir} . $sep . 
           $info->{playlistArtistName} . $sep . $info->{playlistName};
@@ -274,12 +314,12 @@ sub download_songs {
         my $new_fh = $self->open_new_pathname($path, $fname);
         if($new_fh) { 
             binmode $new_fh; 
-            print $new_fh $decoded;
+            print $new_fh $header, $decoded;
             close $new_fh;
             my $pathname = $path . $sep . $fname;
             my $qt = new M4P::QuickTime(file => $pathname);
             $qt->iTMS_MetaInfo($info);
-            $qt->WriteFile($pathname);
+            $qt->WriteFile($pathname);            
         }
         else { 
             $self->err(
@@ -288,7 +328,8 @@ sub download_songs {
     }
 }
 
-# get a list of songs we have purchased but not signed off on downloading yet
+# get a hashed list of songs we have purchased but not 
+# signed off on downloading yet, keyed by downloadKey
 sub get_pending_downloads {
     my($self) = @_;
     $self->login unless $self->{protocol}->{secure_bag};
@@ -298,23 +339,21 @@ sub get_pending_downloads {
     if($response->is_success) {
         my $dicts = $self->parse_dict($response->content, 'array/dict');
         foreach my $dict (@{$dicts}) {
-            my $key = $dict->{downloadKey};
-            my $url = $dict->{URL};
-            next unless $key and $url;
-            my $download_url = $url . '?downloadKey=' . $key;
-            $self->{protocol}->{downloadable}->{$download_url} = $dict;
+            my $key = $dict->{downloadKey} or next;
+            my $download_param = '?downloadKey=' . $key;
+            $self->{protocol}->{downloadable}->{$download_param} = $dict;
         }
     }
-    return $self->download_songs;
+    return $self->{protocol}->{downloadable};
 }
 
 # Get a song preview from preview URL returned with a search
 sub preview {
     my($self, $preview_song) = @_;
-    # download a song preview (need the 'previewURL' returned from a search)
+    # download a song preview from {previewURL} from the song hash
     my $preview_url = $preview_song->{previewURL};
     my $preview_name = reverse ( (split /\//, reverse $preview_url)[0] );
-    my $preview = $self->request($preview_url);
+    my $preview = $self->request($preview_url, '');
     if($preview->is_success) {
         my $sep = $self->{protocol}->{path_sep};
         my $path = $self->{protocol}->{download_dir} . $sep . 'previews';
@@ -497,43 +536,6 @@ sub parse_xml_response {
         while(my ($k, $v) = each %{$d}) { $dict_hash{$k} = $v }
     }
     return \%dict_hash;
-}
-
-sub login {
-    my($self) = @_;
-    $self->err("Need user_id and password in call to login for iTMS_Client") 
-      unless $self->{protocol}->{user_id} and $self->{protocol}->{password};
-    my $user_id = $self->{protocol}->{user_id};
-    my $password = $self->{protocol}->{password};
-    my $account_type = $self->{protocol}->{account_type_code};
-    my $gu_id = $self->gu_id || $self->make_gu_id;
-    $self->err("No guID for login") unless $gu_id;
-    my $resp = $self->request("http://phobos.apple.com/storeBag.xml", '')
-      or $self->err("Cannot reach iTMS key server phobos.apple.com via network");   
-    $self->{protocol}->{store_bag} = $resp->content;
-    $resp = $self->request("http://phobos.apple.com/secureBag.xml", '')
-      or $self->err("Cannot retrieve secure bag from iTMS over network");
-    $self->{protocol}->{secure_bag} = $self->parse_xml_response($resp->content);
-    my $authAccount = $self->{protocol}->{secure_bag}->{authenticateAccount}
-      or $self->err("URL for 'authenticateAccount' not found in secure bag.");
-    $self->{protocol}->{login_id} = $user_id;
-    my $cgi_params = '?appleId=' . uri_escape($user_id) . '&password=' .
-      uri_escape($password) . '&accountKind=' . $account_type . 
-      '&attempt=1&guid=' . uri_escape($self->gu_id || $self->make_gu_id);
-    $resp = $self->request($authAccount, $cgi_params)
-      or $self->err("Cannot authenticate user $user_id");
-    my $auth_response = $self->parse_xml_response($resp->content);
-    my $customer_message = $auth_response->{customerMessage};
-    my $jingleDocType = $auth_response->{jingleDocType};
-    $self->err("Login failure! Message: $customer_message")
-      unless $jingleDocType and $jingleDocType =~ /Success$/i;
-    $self->{protocol}->{password_token} = $auth_response->{passwordToken};
-    $self->{protocol}->{ds_id} = $auth_response->{dsPersonId};
-    $self->{protocol}->{credit_balance} = $auth_response->{creditBalance};
-    $self->{protocol}->{credit_display} = $auth_response->{creditDisplay};
-    $self->{protocol}->{free_song_balance} = $auth_response->{freeSongBalance};
-    $self->{protocol}->{authentication} = $auth_response; 
-    return $auth_response;
 }
 
 sub authorize {
@@ -776,6 +778,10 @@ listings and obtaining the user's keys.
     composer, song, genre, all. If used, 'all' should override other 
     specifications.
 
+=item B<login>
+
+    Log in to the iTMS, using parameters given in new().
+
 =item B<retrieve_keys_from_iTMS>
 
     $ua->retrieve_keys_from_iTMS;
@@ -821,7 +827,7 @@ listings and obtaining the user's keys.
 
 =item B<download_songs>
 
-    $ua->download_songs; # # 
+    $ua->download_songs; # Not working yet on some platforms, gives 403 error
 
     Download any songs pending for the user, including those just purchased.
 
