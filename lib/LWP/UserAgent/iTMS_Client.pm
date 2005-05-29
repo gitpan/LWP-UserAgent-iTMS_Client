@@ -2,7 +2,7 @@ package LWP::UserAgent::iTMS_Client;
 
 require 5.006;
 use base 'LWP::UserAgent';
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 use strict;
 use warnings;
@@ -85,7 +85,6 @@ sub new {
     $self->{protocol}->{login_id} = 
       $self->{protocol}->{user_id} || '?? unknown ??';
     $self->{protocol}->{gu_id} ||= $self->gu_id;
-    $self->{protocol}->{ds_id} ||= -1;
     $self->{protocol}->{download_dir} ||= $ENV{USERPROFILE} .
       "/My Documents/My Music/iTunes/iTunes Music";
     $self->{protocol}->{error_handler} ||= $_error;
@@ -93,9 +92,9 @@ sub new {
 }
 
 sub request {
-    my($self, $url, $params) = @_;
+    my($self, $url, $params, $cookie) = @_;
     # create request and send it via the base class method.
-    my $hdr = $self->make_request_header($url);
+    my $hdr = $self->make_request_header($url, $cookie);
     my $request = new HTTP::Request('GET' => $url . $params, $hdr);
     my $response = $self->SUPER::request($request);
     if ($response->is_success) {
@@ -279,7 +278,7 @@ sub purchase {
           $entry->{songName}: " . $dict->{explanation} ) 
           unless $result_type and $result_type =~ /Success/i;
         # downloadable is a hash of hashes keyed by download params key
-        my $download_param = '?downloadKey=' . $dict->{downloadKey};
+        my $download_param = 'downloadKey=' . $dict->{downloadKey};
         $self->{protocol}->{downloadable}->{$download_param} = $dict;
     }
     else { 
@@ -291,7 +290,6 @@ sub purchase {
 
 # download purchased music not yet gotten from iTMS 
 # song list of hashes is in $self->{protocol}->{downloadable}
-# this is not working yet on some platforms, gives a 403 error-- FIXME
 sub download_songs {
     my($self) = @_;
     while(my($downloadKey, $info) = each %{$self->{protocol}->{downloadable}}) {
@@ -299,14 +297,14 @@ sub download_songs {
         $key = hexToUchar($key) if length($key) == 32;
         next unless length($key) == 16;
         my $url = $info->{URL};
-        my $response = $self->request($url, $downloadKey);
+        my $response = $self->request($url, '', $downloadKey);
         next unless $response->is_success;
         my $iviv = decode_base64("JOb1Q/OHEFarNPJ/Zf8Adg==");
         my $alg = new Crypt::Rijndael($key, Crypt::Rijndael::MODE_CBC);
-        $alg->set_iviv($iviv);
-        my $decoded = $alg->decrypt( $response->content, 0, 
-          int(length($response->content) / 16) * 16 );
-        my $header = pack "Na8N", 8, 'ftypM4A ', length $decoded;
+        $alg->set_iv($iviv);
+        my $decoded = $alg->decrypt( $response->content );
+        my $moov_pos = index($decoded, 'moov');
+        next unless $moov_pos > 0 and $moov_pos < 100;
         my $sep = $self->{protocol}->{path_sep};
         my $path = $self->{protocol}->{download_dir} . $sep . 
           $info->{playlistArtistName} . $sep . $info->{playlistName};
@@ -314,12 +312,12 @@ sub download_songs {
         my $new_fh = $self->open_new_pathname($path, $fname);
         if($new_fh) { 
             binmode $new_fh; 
-            print $new_fh $header, $decoded;
+            print $new_fh $decoded;
             close $new_fh;
             my $pathname = $path . $sep . $fname;
-            my $qt = new M4P::QuickTime(file => $pathname);
-            $qt->iTMS_MetaInfo($info);
-            $qt->WriteFile($pathname);            
+#            my $qt = new Audio::M4P::QuickTime(file => $pathname);
+#            $qt->iTMS_MetaInfo($info);
+#            $qt->WriteFile($pathname);            
         }
         else { 
             $self->err(
@@ -330,7 +328,7 @@ sub download_songs {
 
 # get a hashed list of songs we have purchased but not 
 # signed off on downloading yet, keyed by downloadKey
-sub get_pending_downloads {
+sub pending_downloads {
     my($self) = @_;
     $self->login unless $self->{protocol}->{secure_bag};
     my $pending_song_url = $self->{protocol}->{secure_bag}->{pendingSongs} 
@@ -340,7 +338,7 @@ sub get_pending_downloads {
         my $dicts = $self->parse_dict($response->content, 'array/dict');
         foreach my $dict (@{$dicts}) {
             my $key = $dict->{downloadKey} or next;
-            my $download_param = '?downloadKey=' . $key;
+            my $download_param = 'downloadKey=' . $key;
             $self->{protocol}->{downloadable}->{$download_param} = $dict;
         }
     }
@@ -368,11 +366,13 @@ sub preview {
 #****** internal class methods--interfaces below may change with updates *****#
 
 sub make_request_header {
-    my($self, $url) = @_;
+    my($self, $url, $cookie) = @_;
     my $agent_name = "iTunes/4.7.1 (Macintosh; U; PPC Mac OS X 10.3.8)";
     my $hdr = new HTTP::Headers(
         'User-agent' => $agent_name,
         'Accept-Language' => "en-us, en;q=0.50",
+#        'Accept' => '*/*',
+#        'Connection' => 'close',
         'X-Apple-Tz' => $self->msec_since_epoch,
         'X-Apple-Validation' => $self->compute_validator($url, $agent_name),
         'Accept-Encoding' => "gzip, x-aes-cbc",
@@ -381,7 +381,8 @@ sub make_request_header {
     $hdr->header('X-Token' => $self->{protocol}->{password_token}) 
       if $self->{protocol}->{password_token};
     $hdr->header('X-Dsid' => $self->{protocol}->{ds_id}) 
-      if $self->{protocol}->{ds_id} > 0;
+      if $self->{protocol}->{ds_id};
+    $hdr->header('Cookie' => $cookie) if $cookie;
     return $hdr;
 }
 
@@ -823,20 +824,31 @@ listings and obtaining the user's keys.
   
     Purchase and download a song, by song id number or 'songId' as a search 
     result (use search to find the song and then get the songId from the 
-    search result data structure, or "dict" hash reference).
+    search result data structure, or "dict" hash reference). Should call the 
+    B<download_songs> method automatically after the purchase.
 
 =item B<download_songs>
 
-    $ua->download_songs; # Not working yet on some platforms, gives 403 error
+    $ua->download_songs;
 
-    Download any songs pending for the user, including those just purchased.
+    Download any songs pending for the user, including those just purchased. In order 
+    to download songs purchased but not immediately downloaded, should be called 
+    after B<pending_downloads> is called.
+
+=item B<pending_downloads>
+
+    my $hashref = $ua->pending_downloads;
+    
+    Get a hashref, keyed by downloadKey, of purchased, but not yet downloaded 
+    songs. This data is also stored in the object, so that B<download_songs>
+    may be called after this method call to download the songs found.
 
 =item B<preview>
 
     $ua->preview($song);
     
     Download a preview for a song entry, if available. $song is a reference
-    to a hash data for a song returned by the search method.
+    to the hash of data for a song returned by the search method.
 
 =head1 BUGS
 
