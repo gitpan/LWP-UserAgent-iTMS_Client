@@ -2,7 +2,7 @@ package LWP::UserAgent::iTMS_Client;
 
 require 5.006;
 use base 'LWP::UserAgent';
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 
 use strict;
 use warnings;
@@ -17,7 +17,6 @@ use Crypt::CBC;
 use Crypt::Rijndael;
 use Crypt::AppleTwoFish;
 use MIME::Base64 qw( encode_base64 decode_base64 );
-use Audio::M4P::QuickTime;
 
 # account type determines ID and password (apple vs AOL)
 my %account_type_code = ( apple => 0, aol => 1 );
@@ -302,7 +301,8 @@ sub download_songs {
         my $iviv = decode_base64("JOb1Q/OHEFarNPJ/Zf8Adg==");
         my $alg = new Crypt::Rijndael($key, Crypt::Rijndael::MODE_CBC);
         $alg->set_iv($iviv);
-        my $decoded = $alg->decrypt( $response->content );
+        my $decoded = $alg->decrypt( substr($response->content, 0, 
+          int((length $response->content) / 16) * 16 ) );
         my $moov_pos = index($decoded, 'moov');
         next unless $moov_pos > 0 and $moov_pos < 100;
         my $sep = $self->{protocol}->{path_sep};
@@ -314,10 +314,8 @@ sub download_songs {
             binmode $new_fh; 
             print $new_fh $decoded;
             close $new_fh;
-            my $pathname = $path . $sep . $fname;
-#            my $qt = new Audio::M4P::QuickTime(file => $pathname);
-#            $qt->iTMS_MetaInfo($info);
-#            $qt->WriteFile($pathname);            
+            $self->{protocol}->{completed_downloads}->{$info->{songId}} =
+              $info;
         }
         else { 
             $self->err(
@@ -343,6 +341,22 @@ sub pending_downloads {
         }
     }
     return $self->{protocol}->{downloadable};
+}
+
+# notify iTMS that song is downloaded--until then we can re-download the song
+sub notify_downloads_done {
+    my($self) = @_;
+    my $songDownloadDone = $self->{protocol}->{secure_bag}->{songDownloadDone};
+    foreach my $songId ( keys %{$self->{protocol}->{completed_downloads}} ) { 
+        my $resp = $self->request($songDownloadDone, '?songId=' . $songId);
+        if($resp->is_success) {
+            my $response_vars = $self->parse_xml_response($resp->content);
+            delete $self->{protocol}->{secure_bag}->{songDownloadDone}->{songId}
+            if( $response_vars->{jingleDocType} and 
+                $response_vars->{jingleDocType} =~ /Success$/i );
+        }
+    }
+    return $self->{protocol}->{completed_downloads};
 }
 
 # Get a song preview from preview URL returned with a search
@@ -429,6 +443,7 @@ sub drms_dir {
 
 sub open_new_pathname {
     my($self, $path, $filename) = @_;
+    $path =~ s|(\/.*):|$1|g;
     mkpath($path);
     open( my $fh, '>', $path . $self->{protocol}->{path_sep} . $filename )
       or return;
@@ -673,19 +688,15 @@ LWP::UserAgent::iTMS_Client - libwww-perl client for Apple iTunes music store
 =head1 DESCRIPTION
 
 This perl module implements a user agent which can interact with the
-Apple iTunes Music Store (iTMS). In the long run, we envision a Perl 
-extension that will allow automated browsing and purchasing of music. For 
-example, the module might be used to automatically get samples of new 
-albums by a particular artist, or buy everything on a Top Ten list weekly.
+Apple iTunes Music Store (iTMS). For example, this module could allow a 
+perl program that would automatically get samples of new albums by a 
+particular artist, or buy everything on a Top Ten list weekly.
 
 LWP::UserAgent::iTMS_Client is a sub-class of LWP::UserAgent and implements 
 the methods of UserAgent, but does so using Apple's officially undocumented 
 protocols. Because these protocols change with revisions to iTunes, the 
 modules may occasionally lag Apple's changes until this module, too, is 
 updated.
-
-The initial versions of this user agent will concentrate on browsing the 
-listings and obtaining the user's keys.
 
 =head1 METHODS
 
@@ -820,7 +831,7 @@ listings and obtaining the user's keys.
 
 =item B<purchase>
 
-    $ua->purchase($song_id);  # # 
+    $ua->purchase($song_id); 
   
     Purchase and download a song, by song id number or 'songId' as a search 
     result (use search to find the song and then get the songId from the 
@@ -842,6 +853,14 @@ listings and obtaining the user's keys.
     Get a hashref, keyed by downloadKey, of purchased, but not yet downloaded 
     songs. This data is also stored in the object, so that B<download_songs>
     may be called after this method call to download the songs found.
+
+=item B<notify_downloads_done>
+
+    $qt->notify_downloads_done;
+    
+    Notify iTMS that downloads of purchased music during the login session 
+    have been successful. After such notification, songs may not be available
+    to be re-downloaded as entries with B<pending_downloads>.
 
 =item B<preview>
 

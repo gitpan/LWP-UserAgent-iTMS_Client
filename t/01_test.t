@@ -15,7 +15,8 @@ my $results = $ua->search(artist => 'Vangelis', song => 'long ago');
 ok( index($results->[0]->{songName}, 'ear') > 0);
 ok( index($results->[0]->{playlistArtistName}, 'angel') > 0);
 
-my $results2 = $ua->search(artist => 'u2', song => 'Blindness');
+my $results2 = $ua->search(composer => 'Mozart', song => 'piano duet', 
+  artist => 'britten');
 if($results2) {
     foreach my $b (@{$results2}) { $ua->preview($b) }
 }

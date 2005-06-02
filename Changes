@@ -29,3 +29,7 @@ Revision history for Perl module LWP::UserAgent::iTMS_Client
 0.07 Sun May 29 2005
     - pod additions
     - download modifications to the download_songs method
+    
+0.08 Wed Jun 1 2005
+    - pod changes
+    - fix for artist directories containing colons in the downwnload directory
