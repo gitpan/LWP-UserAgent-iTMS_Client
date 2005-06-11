@@ -12,8 +12,9 @@ isa_ok ($ua, 'LWP::UserAgent::iTMS_Client');
 
 my $results = $ua->search(artist => 'Vangelis', song => 'long ago');
 
-ok( index($results->[0]->{songName}, 'ear') > 0);
-ok( index($results->[0]->{playlistArtistName}, 'angel') > 0);
+ok( index($results->[0]->{songName}, 'ear') > 0, 'search okay');
+ok( index($results->[0]->{playlistArtistName}, 'angel') > 0, 
+  'search of artist okay');
 
 my $results2 = $ua->search(composer => 'Mozart', song => 'piano duet', 
   artist => 'britten');
@@ -21,8 +22,8 @@ if($results2) {
     foreach my $b (@{$results2}) { $ua->preview($b) }
 }
 
-ok( opendir(my $dh, './previews') );
+ok( opendir(my $dh, './previews'), 'Preview download directory created ok' );
 my @p = grep /^s0/, readdir $dh;
-ok(scalar @p > 0);
+ok(scalar @p > 0, 'got preview(s) ok' );
 
 

@@ -2,7 +2,7 @@ package LWP::UserAgent::iTMS_Client;
 
 require 5.006;
 use base 'LWP::UserAgent';
-our $VERSION = '0.08';
+our $VERSION = '0.09';
 
 use strict;
 use warnings;
@@ -167,7 +167,8 @@ sub search {
     }
     # kludge for encephalopathic iTMS advancedSearch CGI when no song specified
     # Music Store, you _need_ to be google spidered...are you dumb on purpose?
-    $params .= '&songTerm=&sp;' unless $had_song; 
+    $params .= '&songTerm=&sp;' 
+      unless( $had_song or $search_url eq $all_search_URL ); 
     my $results = $self->request($search_url, $params);
     return $self->parse_dict($results->content, 'array/dict');
 }
@@ -351,11 +352,12 @@ sub notify_downloads_done {
         my $resp = $self->request($songDownloadDone, '?songId=' . $songId);
         if($resp->is_success) {
             my $response_vars = $self->parse_xml_response($resp->content);
-            delete $self->{protocol}->{secure_bag}->{songDownloadDone}->{songId}
+            delete $self->{protocol}->{secure_bag}->{completed_downloads}->{songId}
             if( $response_vars->{jingleDocType} and 
                 $response_vars->{jingleDocType} =~ /Success$/i );
         }
     }
+    # return the list of completed downloads not yet notifieed successfully
     return $self->{protocol}->{completed_downloads};
 }
 
