@@ -2,7 +2,7 @@ package LWP::UserAgent::iTMS_Client;
 
 require 5.006;
 use base 'LWP::UserAgent';
-our $VERSION = '0.09';
+our $VERSION = '0.12';
 
 use strict;
 use warnings;
@@ -34,6 +34,7 @@ my %country_code = (
     Greece          => 143448,
     Ireland         => 143449,
     Italy           => 143450,
+    Japan           => 143462,
     Luxembourg      => 143451,
     Netherlands     => 143452,
     Norway          => 143457,
@@ -96,9 +97,8 @@ sub request {
     my $hdr = $self->make_request_header($url, $cookie);
     my $request = new HTTP::Request('GET' => $url . $params, $hdr);
     my $response = $self->SUPER::request($request);
-    if ($response->is_success) {
+    if($response->is_success) {
         # process and decrypt or decompress the response.
-        $self->{protocol}->{content} = $response->content;
         my $encoding = $response->content_encoding;
         return $response unless $encoding;
         if($encoding =~ /x-aes-cbc/) {
@@ -119,7 +119,7 @@ sub request {
             else { 
                 $self->err("Bad encoding protocol in response from $url$params");
             }
-            if ( $h_iviv ) {
+            if( $h_iviv ) {
                 my $alg = new Crypt::Rijndael($key, Crypt::Rijndael::MODE_CBC);
                 $alg->set_iv(hexToUchar($h_iviv));
                 $response->content($alg->decrypt($response->content));
@@ -270,9 +270,8 @@ sub purchase {
       '&guid=' . $self->gu_id . 
       '&rebuy=false&buyWithoutAuthorization=true&wasWarnedAboutFirstTimeBuy=true';
     my $response = $self->request($buy_url, $buy_request_params);
-    my $dict;
     if($response->is_success) {
-        $dict = $self->parse_xml_response($response->content);
+        my $dict = $self->parse_xml_response($response->content);
         my $result_type = $dict->{jingleDocType};
         $self->err( "Failed to purchase song $entry->{songId}, 
           $entry->{songName}: " . $dict->{explanation} ) 
@@ -623,7 +622,7 @@ sub hexToUchar {
 
 sub song_keyed_intersection {
     my($aref_1, $aref_2) = @_;
-    return unless $aref_1 and $aref_2 and scalar $aref_1 and scalar $aref_2;
+    return unless $aref_1 and $aref_2 and scalar @$aref_1 and scalar @$aref_2;
     my @intersection = ();
     my(%h1, $h, $k);
     foreach $h (@$aref_1) { 
@@ -631,8 +630,9 @@ sub song_keyed_intersection {
         $h1{$k} = $h if $k;
     }
     foreach $h (@$aref_2) { 
-        $k = $h->{songId}; 
-        push @intersection, $h1{$k} if $k and $h1{$k};
+        $k = $h->{songId} or next;
+        my $song = $h1{$k} or next;
+        push @intersection, $song;
     }
     return \@intersection;
 }

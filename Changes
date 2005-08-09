@@ -33,3 +33,12 @@ Revision history for Perl module LWP::UserAgent::iTMS_Client
 0.08 Wed Jun 1 2005
     - pod changes
     - fix for artist directories containing colons in the downwnload directory
+
+0.09 Sat 11 June 2005
+    - a few pod changes
+    - changed return value of notify_downloads_done() to something sensible
+
+0.12 Mon 8 Aug 2005
+    - some code cleanup
+    - added Japan to supported country codes
+    
