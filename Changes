@@ -42,3 +42,9 @@ Revision history for Perl module LWP::UserAgent::iTMS_Client
     - some code cleanup
     - added Japan to supported country codes
     
+0.14 Wed 17 Aug 2005
+    - code cleanup
+    - refactor xml methods to helper functions
+
+
+    
