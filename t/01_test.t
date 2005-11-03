@@ -12,8 +12,10 @@ isa_ok ($ua, 'LWP::UserAgent::iTMS_Client');
 
 my $results = $ua->search(artist => 'Vangelis', song => 'long ago');
 
+#while( my($k, $v) = each %{$results->[0]} ) { print "key: $k value: $v\n" } 
+
 ok( index($results->[0]->{songName}, 'ear') > 0, 'search okay');
-ok( index($results->[0]->{playlistArtistName}, 'angel') > 0, 
+ok( index($results->[0]->{playlistName}, 'Best') > 0, 
   'search of artist okay');
 
 my $results2 = $ua->search(composer => 'Mozart', song => 'piano duet', 

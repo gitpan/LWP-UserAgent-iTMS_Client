@@ -46,5 +46,7 @@ Revision history for Perl module LWP::UserAgent::iTMS_Client
     - code cleanup
     - refactor xml methods to helper functions
 
+0.15 Wed Oct 2 2005
+    - changed a test to fit changes at iTMS server index
 
     

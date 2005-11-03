@@ -2,7 +2,7 @@ package LWP::UserAgent::iTMS_Client;
 
 require 5.006;
 use base 'LWP::UserAgent';
-our $VERSION = '0.14';
+our $VERSION = '0.15';
 
 use strict;
 use warnings;
@@ -112,7 +112,7 @@ sub new {
     my $self = $class->SUPER::new(%args);
     $self->{protocol} = \%protocol_args;
     $self->{protocol}->{home_dir} ||= $ENV{APPDATA} || $ENV{HOME} || '~';
-    $self->{protocol}->{maybe_dot} ||= ( $^O =~ /Win/ ) ? '' : '.';
+    $self->{protocol}->{maybe_dot} ||= ( $^O =~ /Win/ ) ? q{} : '.';
     $self->{protocol}->{path_sep} ||= '/';
     $self->{protocol}->{account_type_code} =
       $account_type_code{ lc $self->{protocol}->{account_type} } || 0;
@@ -185,7 +185,7 @@ sub search {
 
     # we could use the urlBag URL here, but hard coded we skip one request.
     my $search_url   = $advanced_search_URL;
-    my $params       = '';
+    my $params       = q{};
     my $loops        = 0;
     my $had_song     = 0;
     my %not_together = ( artist => 1, composer => 1 );
@@ -228,11 +228,11 @@ sub login {
     my $account_type = $self->{protocol}->{account_type_code};
     my $gu_id        = $self->gu_id || $self->make_gu_id;
     $self->err("No guID for login") unless $gu_id;
-    my $resp = $self->request( "http://phobos.apple.com/storeBag.xml", '' )
+    my $resp = $self->request( "http://phobos.apple.com/storeBag.xml", q{} )
       or
       $self->err("Cannot reach iTMS key server phobos.apple.com via network");
     $self->{protocol}->{store_bag} = $resp->content;
-    $resp = $self->request( "http://phobos.apple.com/secureBag.xml", '' )
+    $resp = $self->request( "http://phobos.apple.com/secureBag.xml", q{} )
       or $self->err("Cannot retrieve secure bag from iTMS over network");
     $self->{protocol}->{secure_bag} =
       parse_xml_response( $resp->content );
@@ -361,7 +361,7 @@ sub download_songs {
         $key = hexToUchar($key) if length($key) == 32;
         next unless length($key) == 16;
         my $url = $info->{URL};
-        my $response = $self->request( $url, '', $downloadKey );
+        my $response = $self->request( $url, q{}, $downloadKey );
         next unless $response->is_success;
         my $iviv = decode_base64("JOb1Q/OHEFarNPJ/Zf8Adg==");
         my $alg = new Crypt::Rijndael( $key, Crypt::Rijndael::MODE_CBC );
@@ -442,7 +442,7 @@ sub preview {
     # download a song preview from {previewURL} from the song hash
     my $preview_url  = $preview_song->{previewURL};
     my $preview_name = reverse( ( split /\//, reverse $preview_url )[0] );
-    my $preview      = $self->request( $preview_url, '' );
+    my $preview      = $self->request( $preview_url, q{} );
     if ( $preview->is_success ) {
         my $sep    = $self->{protocol}->{path_sep};
         my $path   = $self->{protocol}->{download_dir} . $sep . 'previews';
@@ -705,8 +705,8 @@ sub song_keyed_intersection {
     my @intersection = ();
     my ( %h1, $h, $k );
     foreach $h (@$aref_1) {
-        $k = $h->{songId};
-        $h1{$k} = $h if $k;
+        $k = $h->{songId} or next;
+        $h1{$k} = $h;
     }
     foreach $h (@$aref_2) {
         $k = $h->{songId} or next;
@@ -723,7 +723,7 @@ sub progress {
     my $bar = sub {
         my $state = shift;
         my $char  = '=';
-        if ( $state =~ /begin/i ) { print "\n", 'Progress: |   ' }
+        if ( $state =~ /begin/i )  { print "\n", 'Progress: |   ' }
         elsif ( $state =~ /end/i ) { print "\x08\x08\x08", '| :Done!', "\n" }
         else { printf( "\x08\x08\x08%s%02d%%", $char, $state ) }
     };
