@@ -49,4 +49,5 @@ Revision history for Perl module LWP::UserAgent::iTMS_Client
 0.15 Wed Oct 2 2005
     - changed a test to fit changes at iTMS server index
 
-    
+0.16 Sun May 28 2006
+    - change headers to reflect correct country codes on requests

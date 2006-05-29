@@ -2,13 +2,13 @@ package LWP::UserAgent::iTMS_Client;
 
 require 5.006;
 use base 'LWP::UserAgent';
-our $VERSION = '0.15';
+our $VERSION = '0.16';
 
 use strict;
 use warnings;
 use Carp;
 use File::Path;
-use Time::HiRes;
+use DateTime;
 use XML::Twig;
 use URI::Escape;
 use Digest::MD5 'md5_hex';
@@ -60,6 +60,9 @@ my $all_search_URL =
 'http://phobos.apple.com/WebObjects/MZSearch.woa/wa/com.apple.jingle.search.DirectAction/search?';
 my $advanced_search_URL =
   'http://phobos.apple.com/WebObjects/MZSearch.woa/wa/advancedSearchResults?';
+my $store_bag_URL  = 'http://ax.phobos.apple.com.edgesuite.net/WebObjects/MZStore.woa/wa/initiateSession';
+my $secure_bag_URL = 'http://phobos.apple.com/secureBag.xml';
+
 
 my %iTMS_genres = (
     "All Genres"           => 1,
@@ -75,7 +78,6 @@ my %iTMS_genres = (
     Electronic             => 1,
     Folk                   => 1,
     "French Pop"           => 1,
-    "German Pop"           => 1,
     "German Pop"           => 1,
     "Hip-Hop/Rap"          => 1,
     Holiday                => 1,
@@ -103,7 +105,7 @@ sub new {
     my ( $class, %args ) = @_;
     my %protocol_args;
     foreach my $k (
-        qw( account_type user_id ds_id gu_id password error_handler
+        qw( account_type user_id ds_id gu_id password error_handler DEBUG 
         deauth_wait_secs country home_dir maybe_dot path_sep download_dir )
       )
     {
@@ -111,6 +113,8 @@ sub new {
     }
     my $self = $class->SUPER::new(%args);
     $self->{protocol} = \%protocol_args;
+    
+    $self->{protocol}->{DEBUG} ||= 0;
     $self->{protocol}->{home_dir} ||= $ENV{APPDATA} || $ENV{HOME} || '~';
     $self->{protocol}->{maybe_dot} ||= ( $^O =~ /Win/ ) ? q{} : '.';
     $self->{protocol}->{path_sep} ||= '/';
@@ -123,15 +127,17 @@ sub new {
     $self->{protocol}->{download_dir} ||=
       $ENV{USERPROFILE} . "/My Documents/My Music/iTunes/iTunes Music";
     $self->{protocol}->{error_handler} ||= $_error;
+    
     return $self;
 }
 
 sub request {
-    my ( $self, $url, $params, $cookie ) = @_;
+    my ( $self, $url, $params, $cookie, $extra_headers ) = @_;
 
     # create request and send it via the base class method.
-    my $hdr = $self->make_request_header( $url, $cookie );
+    my $hdr = $self->make_request_header( $url, $cookie, $extra_headers );
     my $request = new HTTP::Request( 'GET' => $url . $params, $hdr );
+    print $request->as_string, "\n" if $self->{protocol}->{DEBUG} > 2;
     my $response = $self->SUPER::request($request);
     if ( $response->is_success ) {
 
@@ -173,7 +179,10 @@ sub request {
                 Compress::Zlib::memGunzip( $response->content ) );
         }
     }
-    else { $self->err( $response->status_line ) }
+    else { 
+        print "Error in request $request\n" if $self->{protocol}->{DEBUG};
+        $self->err( $response->status_line );
+    }
     return $response;
 }
 
@@ -228,11 +237,11 @@ sub login {
     my $account_type = $self->{protocol}->{account_type_code};
     my $gu_id        = $self->gu_id || $self->make_gu_id;
     $self->err("No guID for login") unless $gu_id;
-    my $resp = $self->request( "http://phobos.apple.com/storeBag.xml", q{} )
+    my $resp = $self->request( $store_bag_URL, q{} )
       or
       $self->err("Cannot reach iTMS key server phobos.apple.com via network");
     $self->{protocol}->{store_bag} = $resp->content;
-    $resp = $self->request( "http://phobos.apple.com/secureBag.xml", q{} )
+    $resp = $self->request( $secure_bag_URL, q{} )
       or $self->err("Cannot retrieve secure bag from iTMS over network");
     $self->{protocol}->{secure_bag} =
       parse_xml_response( $resp->content );
@@ -245,10 +254,20 @@ sub login {
       . uri_escape($password)
       . '&accountKind='
       . $account_type
-      . '&attempt=1&guid='
-      . uri_escape( $self->gu_id || $self->make_gu_id );
-    $resp = $self->request( $authAccount, $cgi_params )
-      or $self->err("Cannot authenticate user $user_id");
+      . '&attempt=1&machineName=CHEETAH&guid='
+      . uri_escape( $self->gu_id || $self->make_gu_id )
+      . '&why=viewAccount&createSession=true HTTP/1.1';
+    print "Starting login to $authAccount with params $cgi_params...\n" 
+      if $self->{protocol}->{DEBUG} > 1;
+    my $cookie = 
+    's_vi=[CS]v1|45AA6286-211DCFE3[CE]; X-Dsid=69118029; dwmapc=true; iTMS5=sGXklC2FO80LGuS28E9xFod92ucRe7mwvU9Y9ixcENo=';
+    my $extra_headers;
+    $extra_headers->{'X-Apple-Readcookie'} = 'AA002=1123649385-1962963564/1124859760';
+    $resp = $self->request( $authAccount, $cgi_params, $cookie, $extra_headers );
+    unless($resp->content) {
+        $self->err("Cannot authenticate user $user_id: ", $resp->status_line);
+    }
+    print "login response:\n$resp\n" if $self->{protocol}->{DEBUG} > 1;
     my $auth_response    = parse_xml_response( $resp->content );
     my $customer_message = $auth_response->{customerMessage};
     my $jingleDocType    = $auth_response->{jingleDocType};
@@ -261,6 +280,7 @@ sub login {
     $self->{protocol}->{credit_display}    = $auth_response->{creditDisplay};
     $self->{protocol}->{free_song_balance} = $auth_response->{freeSongBalance};
     $self->{protocol}->{authentication}    = $auth_response;
+    print "\n$auth_response\n" if $self->{protocol}->{DEBUG} > 1;
     return $auth_response;
 }
 
@@ -456,23 +476,24 @@ sub preview {
 #****** internal class methods--interfaces below may change with updates *****#
 
 sub make_request_header {
-    my ( $self, $url, $cookie ) = @_;
-    my $agent_name = "iTunes/4.7.1 (Macintosh; U; PPC Mac OS X 10.3.8)";
+    my ( $self, $url, $cookie, $extra_headers ) = @_;
+    my $agent_name = "iTunes/6.0.2 (Windows; U; Microsoft Windows XP Home Edition Service Pack 2 (Build 2600)) DPI/96";
     my $hdr        = new HTTP::Headers(
-        'User-agent'      => $agent_name,
-        'Accept-Language' => "en-us, en;q=0.50",
-        #        'Accept' => '*/*',
-        #        'Connection' => 'close',
-        'X-Apple-Tz'          => msec_since_epoch(),
+        'User-agent'          => $agent_name,
+        'Accept-Language'     => "en-us, en;q=0.50",
+        'X-Apple-Tz'          => DateTime->now(time_zone => $ENV{TZ} || "PST8PDT")->offset,
         'X-Apple-Validation'  => $self->compute_validator( $url, $agent_name ),
         'Accept-Encoding'     => "gzip, x-aes-cbc",
-        'X-Apple-Store-Front' => $self->store_front,
+        'X-Apple-Store-Front' => $self->store_front($self->{protocol}->{country}),
     );
     $hdr->header( 'X-Token' => $self->{protocol}->{password_token} )
       if $self->{protocol}->{password_token};
     $hdr->header( 'X-Dsid' => $self->{protocol}->{ds_id} )
       if $self->{protocol}->{ds_id};
     $hdr->header( 'Cookie' => $cookie ) if $cookie;
+    while( my( $header, $value ) = each %{$extra_headers} ) {
+        $hdr->header( $header, $value );
+    }
     return $hdr;
 }
 
@@ -610,6 +631,7 @@ sub authorize {
     my $resp = $self->request( $authorizeMachine, $cgi_params )
       or
       $self->err("Failed to properly access authorizing server over network");
+    print "AUTHORIZATION XML:\n", $resp->content, "\n\n" if $self->{protocol}->{DEBUG} > 1;
     my $dict          = parse_xml_response( $resp->content );
     my $jingleDocType = $dict->{jingleDocType};
     $self->err( "Authorization failure for guID " . $self->{protocol}->{gu_id} )
@@ -686,11 +708,6 @@ sub parse_xml_response {
         while ( my ( $k, $v ) = each %{$d} ) { $dict_hash{$k} = $v }
     }
     return \%dict_hash;
-}
-
-sub msec_since_epoch {
-    my ( $sec, $microsec ) = Time::HiRes::gettimeofday();
-    return $sec * 1000 + int( $microsec / 1000 );
 }
 
 sub hexToUchar {
