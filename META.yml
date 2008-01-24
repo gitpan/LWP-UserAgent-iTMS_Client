@@ -1,10 +1,13 @@
-# http://module-build.sourceforge.net/META-spec.html
-#XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
-name:         LWP-UserAgent-iTMS_Client
-version:      0.16
-version_from: lib/LWP/UserAgent/iTMS_Client.pm
-installdirs:  site
-requires:
+--- #YAML:1.0
+name:                LWP-UserAgent-iTMS_Client
+version:             0.22
+abstract:            Interact with the Apple iTunes Music Store
+license:             ~
+author:              
+    - William Hererra (whererra@skylightview.com)
+generated_by:        ExtUtils::MakeMaker version 6.42_01
+distribution_type:   module
+requires:     
     Carp:                          0
     Compress::Zlib:                0
     Crypt::AppleTwoFish:           0.02
@@ -16,6 +19,6 @@ requires:
     Test::More:                    0
     URI::Escape:                   0
     XML::Twig:                     0
-
-distribution_type: module
-generated_by: ExtUtils::MakeMaker version 6.17
+meta-spec:
+    url:     http://module-build.sourceforge.net/META-spec-v1.3.html
+    version: 1.3

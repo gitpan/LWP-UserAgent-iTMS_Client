@@ -2,7 +2,7 @@ package LWP::UserAgent::iTMS_Client;
 
 require 5.006;
 use base 'LWP::UserAgent';
-our $VERSION = '0.16';
+our $VERSION = '0.22';
 
 use strict;
 use warnings;
@@ -48,21 +48,38 @@ my %country_code = (
 
 # for searches
 my %search_topics = (
-    album    => 'albumTerm',
-    artist   => 'artistTerm',
-    composer => 'composerTerm',
-    song     => 'songTerm',
-    genre    => 'genreIndex',
-    all      => 'term'
+    album       => 'albumTerm',         # music and videos
+    artist      => 'artistTerm',        # music and videos
+    composer    => 'composerTerm',      # music and videos
+    song        => 'songTerm',          # music and videos
+    genre       => 'genreIndex',        # music and videos
+    author      => 'authorTerm',        # book and podcast
+    media       => 'media',             # actually for media type specifications
+    title       => 'titleTerm',         # book and podcast
+    director    => 'directorTerm',      # movies
+    producer    => 'producerTerm',      # movies
+    movie       => 'movieTerm',         # movies only
+    description => 'descriptionTerm',   # TV and podcast
+    show        => 'showterm',          # TV only
+);
+
+my %media_types = (
+    all     => 'term',
+    podcast => 'podcast',
+    TV      => 'tvShow',
+    movie   => 'movie',
+    music   => 'music',
+    imix    => 'imix',
+    video   => 'musicVideo',
 );
 
 my $all_search_URL =
 'http://phobos.apple.com/WebObjects/MZSearch.woa/wa/com.apple.jingle.search.DirectAction/search?';
 my $advanced_search_URL =
-  'http://phobos.apple.com/WebObjects/MZSearch.woa/wa/advancedSearchResults?';
-my $store_bag_URL  = 'http://ax.phobos.apple.com.edgesuite.net/WebObjects/MZStore.woa/wa/initiateSession';
+  'http://phobos.apple.com/WebObjects/MZSearch.woa/wa/advancedSearch?';
+my $store_bag_URL =
+'http://ax.phobos.apple.com.edgesuite.net/WebObjects/MZStore.woa/wa/initiateSession';
 my $secure_bag_URL = 'http://phobos.apple.com/secureBag.xml';
-
 
 my %iTMS_genres = (
     "All Genres"           => 1,
@@ -105,7 +122,7 @@ sub new {
     my ( $class, %args ) = @_;
     my %protocol_args;
     foreach my $k (
-        qw( account_type user_id ds_id gu_id password error_handler DEBUG 
+        qw( account_type user_id ds_id gu_id password error_handler DEBUG
         deauth_wait_secs country home_dir maybe_dot path_sep download_dir )
       )
     {
@@ -113,11 +130,11 @@ sub new {
     }
     my $self = $class->SUPER::new(%args);
     $self->{protocol} = \%protocol_args;
-    
-    $self->{protocol}->{DEBUG} ||= 0;
-    $self->{protocol}->{home_dir} ||= $ENV{APPDATA} || $ENV{HOME} || '~';
+
+    $self->{protocol}->{DEBUG}     ||= 0;
+    $self->{protocol}->{home_dir}  ||= $ENV{APPDATA} || $ENV{HOME} || '~';
     $self->{protocol}->{maybe_dot} ||= ( $^O =~ /Win/ ) ? q{} : '.';
-    $self->{protocol}->{path_sep} ||= '/';
+    $self->{protocol}->{path_sep}  ||= '/';
     $self->{protocol}->{account_type_code} =
       $account_type_code{ lc $self->{protocol}->{account_type} } || 0;
     $self->{protocol}->{deauth_wait_secs} ||= 90 + int rand(120);
@@ -127,16 +144,19 @@ sub new {
     $self->{protocol}->{download_dir} ||=
       $ENV{USERPROFILE} . "/My Documents/My Music/iTunes/iTunes Music";
     $self->{protocol}->{error_handler} ||= $_error;
-    
+
     return $self;
 }
 
 sub request {
-    my ( $self, $url, $params, $cookie, $extra_headers ) = @_;
+    my ( $self, $url, $params, $cookie, $extra_headers, $is_post,
+        $post_content ) = @_;
 
     # create request and send it via the base class method.
+    my $req_typ = $is_post ? 'POST' : 'GET';
     my $hdr = $self->make_request_header( $url, $cookie, $extra_headers );
-    my $request = new HTTP::Request( 'GET' => $url . $params, $hdr );
+    my $request = new HTTP::Request( $req_typ => $url . $params, $hdr );
+    $request->content($post_content) if $is_post and $post_content;
     print $request->as_string, "\n" if $self->{protocol}->{DEBUG} > 2;
     my $response = $self->SUPER::request($request);
     if ( $response->is_success ) {
@@ -179,7 +199,7 @@ sub request {
                 Compress::Zlib::memGunzip( $response->content ) );
         }
     }
-    else { 
+    else {
         print "Error in request $request\n" if $self->{protocol}->{DEBUG};
         $self->err( $response->status_line );
     }
@@ -193,12 +213,17 @@ sub search {
     my ( $self, %search_terms ) = @_;
 
     # we could use the urlBag URL here, but hard coded we skip one request.
-    my $search_url   = $advanced_search_URL;
-    my $params       = q{};
-    my $loops        = 0;
-    my $had_song     = 0;
+    my $search_url = $advanced_search_URL;
+    my $had_song   = 0;
+    my $media_type;
+    if ( $search_terms{media} ) {
+        $media_type = delete $search_terms{media};
+    }
+    $media_type = 'music' unless $media_type;
+    my $params = "media=$media_type&searchButton=submit";
+
     my %not_together = ( artist => 1, composer => 1 );
-    my @together     = ();
+    my @together = ();
     while ( my ( $type, $term ) = each %search_terms ) {
         if ( $type eq 'all' ) {
             $search_url = $all_search_URL;
@@ -207,24 +232,27 @@ sub search {
         }
         push @together, $type if $not_together{$type};
 
-        # kludge around what appears to be an advancedSearch iTMS CGI bug
-        # when artist and composer are both specified in a search
         if ( ( scalar @together ) == 2 ) {
             return $self->split_search( @together, \%search_terms );
         }
-        $params .= '&' if $loops;
+        $params .= '&';
         $had_song = 1 if $type eq 'song';
+
+        # parse media types if specified
+        if ( $type eq 'media' )
+        {    # media specifier--may use our terms for media types
+            $term = $media_types{$term} if $media_types{$term};
+        }
+
         $params .= $search_topics{$type} . '=' . uri_escape($term);
-        $loops++;
     }
 
-    # kludge for encephalopathic iTMS advancedSearch CGI when no song specified
-    # Music Store, you _need_ to be google spidered...are you dumb on purpose?
     $params .= '&songTerm=&sp;'
       unless ( $had_song or $search_url eq $all_search_URL );
     my $results = $self->request( $search_url, $params );
     return parse_dict( $results->content, 'array/dict' );
 }
+
 
 # log in to iTMS
 sub login {
@@ -243,8 +271,7 @@ sub login {
     $self->{protocol}->{store_bag} = $resp->content;
     $resp = $self->request( $secure_bag_URL, q{} )
       or $self->err("Cannot retrieve secure bag from iTMS over network");
-    $self->{protocol}->{secure_bag} =
-      parse_xml_response( $resp->content );
+    $self->{protocol}->{secure_bag} = parse_xml_response( $resp->content );
     my $authAccount = $self->{protocol}->{secure_bag}->{authenticateAccount}
       or $self->err("URL for 'authenticateAccount' not found in secure bag.");
     $self->{protocol}->{login_id} = $user_id;
@@ -257,15 +284,16 @@ sub login {
       . '&attempt=1&machineName=CHEETAH&guid='
       . uri_escape( $self->gu_id || $self->make_gu_id )
       . '&why=viewAccount&createSession=true HTTP/1.1';
-    print "Starting login to $authAccount with params $cgi_params...\n" 
+    print "Starting login to $authAccount with params $cgi_params...\n"
       if $self->{protocol}->{DEBUG} > 1;
-    my $cookie = 
-    's_vi=[CS]v1|45AA6286-211DCFE3[CE]; X-Dsid=69118029; dwmapc=true; iTMS5=sGXklC2FO80LGuS28E9xFod92ucRe7mwvU9Y9ixcENo=';
+    my $cookie = '';
     my $extra_headers;
-    $extra_headers->{'X-Apple-Readcookie'} = 'AA002=1123649385-1962963564/1124859760';
-    $resp = $self->request( $authAccount, $cgi_params, $cookie, $extra_headers );
-    unless($resp->content) {
-        $self->err("Cannot authenticate user $user_id: ", $resp->status_line);
+
+#    $extra_headers->{'X-Apple-Readcookie'} = 'AA002=1163224304-1327959573/1165459758';
+    $resp =
+      $self->request( $authAccount, $cgi_params, $cookie, $extra_headers );
+    unless ( $resp->content ) {
+        $self->err( "Cannot authenticate user $user_id: ", $resp->status_line );
     }
     print "login response:\n$resp\n" if $self->{protocol}->{DEBUG} > 1;
     my $auth_response    = parse_xml_response( $resp->content );
@@ -314,7 +342,7 @@ sub retrieve_keys_with_temp_id {
     $self->authorize;
     $self->save_keys;
     print "Please wait for deauthorization of temporary machine...";
-    progress( $self->{protocol}->{deauth_wait_secs}, $callback );
+    iTMS_progress( $self->{protocol}->{deauth_wait_secs}, $callback );
     $self->deauthorize_gu_id( $self->{protocol}->{gu_id} );
 }
 
@@ -353,8 +381,8 @@ sub purchase {
         my $dict        = parse_xml_response( $response->content );
         my $result_type = $dict->{jingleDocType};
         $self->err(
-            "Failed to purchase song $entry->{songId}, 
-          $entry->{songName}: " . $dict->{explanation}
+            "Failed to purchase song $entry->{itemId}, 
+          $entry->{itemName}: " . $dict->{explanation}
           )
           unless $result_type
           and $result_type =~ /Success/i;
@@ -400,19 +428,19 @@ sub download_songs {
           . $info->{playlistArtistName}
           . $sep
           . $info->{playlistName};
-        my $fname  = $info->{songName} . '.m4a';
+        my $fname  = $info->{itemName} . '.m4a';
         my $new_fh = $self->open_new_pathname( $path, $fname );
 
         if ($new_fh) {
             binmode $new_fh;
             print $new_fh $decoded;
             close $new_fh;
-            $self->{protocol}->{completed_downloads}->{ $info->{songId} } =
+            $self->{protocol}->{completed_downloads}->{ $info->{itemId} } =
               $info;
         }
         else {
             $self->err(
-                "Cannot open pathname for song $info->{songName} at $path: $!");
+                "Cannot open pathname for song $info->{itemName} at $path: $!");
         }
     }
 }
@@ -440,12 +468,12 @@ sub pending_downloads {
 sub notify_downloads_done {
     my ($self) = @_;
     my $songDownloadDone = $self->{protocol}->{secure_bag}->{songDownloadDone};
-    foreach my $songId ( keys %{ $self->{protocol}->{completed_downloads} } ) {
-        my $resp = $self->request( $songDownloadDone, '?songId=' . $songId );
+    foreach my $itemId ( keys %{ $self->{protocol}->{completed_downloads} } ) {
+        my $resp = $self->request( $songDownloadDone, '?itemId=' . $itemId );
         if ( $resp->is_success ) {
             my $response_vars = parse_xml_response( $resp->content );
             delete $self->{protocol}->{secure_bag}->{completed_downloads}
-              ->{songId}
+              ->{itemId}
               if (  $response_vars->{jingleDocType}
                 and $response_vars->{jingleDocType} =~ /Success$/i );
         }
@@ -477,21 +505,24 @@ sub preview {
 
 sub make_request_header {
     my ( $self, $url, $cookie, $extra_headers ) = @_;
-    my $agent_name = "iTunes/6.0.2 (Windows; U; Microsoft Windows XP Home Edition Service Pack 2 (Build 2600)) DPI/96";
-    my $hdr        = new HTTP::Headers(
-        'User-agent'          => $agent_name,
-        'Accept-Language'     => "en-us, en;q=0.50",
-        'X-Apple-Tz'          => DateTime->now(time_zone => $ENV{TZ} || "PST8PDT")->offset,
+    my $agent_name =
+"iTunes/6.0.2 (Windows; U; Microsoft Windows XP Home Edition Service Pack 2 (Build 2600)) DPI/96";
+    my $hdr = new HTTP::Headers(
+        'User-agent'      => $agent_name,
+        'Accept-Language' => "en-us, en;q=0.50",
+        'X-Apple-Tz'      =>
+          DateTime->now( time_zone => $ENV{TZ} || "PST8PDT" )->offset,
         'X-Apple-Validation'  => $self->compute_validator( $url, $agent_name ),
         'Accept-Encoding'     => "gzip, x-aes-cbc",
-        'X-Apple-Store-Front' => $self->store_front($self->{protocol}->{country}),
+        'X-Apple-Store-Front' =>
+          $self->store_front( $self->{protocol}->{country} ),
     );
     $hdr->header( 'X-Token' => $self->{protocol}->{password_token} )
       if $self->{protocol}->{password_token};
     $hdr->header( 'X-Dsid' => $self->{protocol}->{ds_id} )
       if $self->{protocol}->{ds_id};
     $hdr->header( 'Cookie' => $cookie ) if $cookie;
-    while( my( $header, $value ) = each %{$extra_headers} ) {
+    while ( my ( $header, $value ) = each %{$extra_headers} ) {
         $hdr->header( $header, $value );
     }
     return $hdr;
@@ -631,7 +662,8 @@ sub authorize {
     my $resp = $self->request( $authorizeMachine, $cgi_params )
       or
       $self->err("Failed to properly access authorizing server over network");
-    print "AUTHORIZATION XML:\n", $resp->content, "\n\n" if $self->{protocol}->{DEBUG} > 1;
+    print "AUTHORIZATION XML:\n", $resp->content, "\n\n"
+      if $self->{protocol}->{DEBUG} > 1;
     my $dict          = parse_xml_response( $resp->content );
     my $jingleDocType = $dict->{jingleDocType};
     $self->err( "Authorization failure for guID " . $self->{protocol}->{gu_id} )
@@ -669,6 +701,7 @@ sub deauthorize {
       unless $auth_response->{jingleDocType} =~ /Success/i;
 }
 
+
 sub err {
     my ( $self, $msg ) = @_;
     $self->{protocol}->{error_handler}->($msg);
@@ -698,10 +731,11 @@ sub parse_dict {
     return \@entries;
 }
 
+
 # get the data in all XML dicts, combine them, return as hash reference.
 # use the basic parse_dict() method not this if duplicate keys in dicts
 sub parse_xml_response {
-    my ( $xml_response ) = @_;
+    my ($xml_response) = @_;
     my $dicts = parse_dict( $xml_response, 'dict' );
     my %dict_hash;
     foreach my $d ( @{$dicts} ) {
@@ -722,29 +756,29 @@ sub song_keyed_intersection {
     my @intersection = ();
     my ( %h1, $h, $k );
     foreach $h (@$aref_1) {
-        $k = $h->{songId} or next;
+        $k = $h->{itemId} or next;
         $h1{$k} = $h;
     }
     foreach $h (@$aref_2) {
-        $k = $h->{songId} or next;
+        $k = $h->{itemId} or next;
         my $song = $h1{$k} or next;
         push @intersection, $song;
     }
     return \@intersection;
 }
 
-sub progress {
+sub iTMS_progress {
     my ( $duration, $callback ) = @_;
     my $increment = 5;
     local $| = 1;
     my $bar = sub {
         my $state = shift;
         my $char  = '=';
-        if ( $state =~ /begin/i )  { print "\n", 'Progress: |   ' }
+        if ( $state =~ /begin/i ) { print "\n", 'Progress: |   ' }
         elsif ( $state =~ /end/i ) { print "\x08\x08\x08", '| :Done!', "\n" }
         else { printf( "\x08\x08\x08%s%02d%%", $char, $state ) }
     };
-    $callback ||= $bar;
+    $callback = $bar unless ref $callback;
     my $iters = $duration / $increment;
     $callback->('begin');
     for ( my $i = 0 ; $i < $iters ; $i++ ) {
@@ -767,15 +801,19 @@ LWP::UserAgent::iTMS_Client - libwww-perl client for Apple iTunes music store
     my $ua = LWP::UserAgent::iTMS_Client->new;
     
     my $listings = $ua->search( song => 'apples' );
-    foreach my $song (@{$listings}) { print $song->{songName} }
+    foreach my $song (@{$listings}) { print $song->{itemName} }
 
-    $listings = $ua->search(artist => 'Vangelis', song => 'long', 
-      genre => 'Electronic');
+    $listings = $ua->search(
+      media => 'music, 
+      artist => 'Vangelis', 
+      song => 'long', 
+      genre => 'Electronic'
+    );
     foreach my $a (@{$results2}) { 
       foreach (sort keys %$a) { print "$_ => ", $a->{$_}, "\n" } 
     }
 
-    # get my authorization keys
+    # get my authorization keys under iTMS old versions
     my $ua = new LWP::UserAgent::iTMS_Client(
         account_type => 'apple',
         user_id => 'name@email.org',
@@ -797,6 +835,8 @@ modules may occasionally lag Apple's changes until this module, too, is
 updated.
 
 =head1 METHODS
+
+=over
 
 =item B<new>
 
@@ -857,8 +897,8 @@ updated.
         Generally '/'. Path separator for the local OS.
         
     download_dir
-        The default location for downloaded music files.
-    
+        The default location for downloaded music files,
+
 =item B<request>
 
     $ua->request('http://phobos.apple.com/WebObjects/MZSearch.woa/wa/com.apple.jingle.search.DirectAction/search', 
@@ -872,21 +912,55 @@ updated.
 
 =item B<search>
 
-    my $results = $ua->search(song => 'Day', composer => 'Lennon');
+    my $results = $ua->search( media => music, song => 'Day', composer => 'Lennon' );
     print "Results for song => Day, composer => Lennon:\n";
     foreach my $a (@{$results1}) { 
         foreach (sort keys %$a) { print "$_ => ", $a->{$_}, "\n" } 
     }
 
-    my $results2 = $ua->search(artist => 'Vangelis', song => 'long ago');
+    my $results2 = $ua->search( media => music, artist => 'Vangelis', song => 'long ago' );
     print "\nResults for artist => Vangelis, song => long ago:\n";
     foreach my $a (@{$results2}) { 
         foreach (sort keys %$a) { print "$_ => ", $a->{$_}, "\n" } 
     }
+    
+    my $results2 = $ua->search( media => TV, show => 'Heroes' );
+    print "\nResults for TV show Heroes:\n";
+    foreach my $a (@{$results2}) { 
+        foreach (sort keys %$a) { print "$_ => ", $a->{$_}, "\n" } 
+    }
+    
 
     The following types of searches should be supported: album, artist, 
     composer, song, genre, all. If used, 'all' should override other 
     specifications.
+    
+    In addtion, varios iTumes 7.0+ media types are suppored in searches, 
+    though the default is usallly still to just search music. 
+    These are supported via the key 
+    
+    media => media type,
+    
+    where media is one of [ all,  music, podcast, TV, movie, video ].
+    
+    The search terms generally vary by media type.  See the following structure for details:
+   
+    my %search_topics = (
+        album       => 'albumTerm',         # music and videos
+        artist      => 'artistTerm',        # music and videos
+        composer    => 'composerTerm',      # music and videos
+        song        => 'songTerm',          # music and videos
+        genre       => 'genreIndex',        # music and videos
+        author      => 'authorTerm',        # book and podcast
+        media       => 'media',             # actually for media type specifications
+        title       => 'titleTerm',         # book and podcast
+        director    => 'directorTerm',      # movies
+        producer    => 'producerTerm',      # movies
+        movie       => 'movieTerm',         # movies only
+        description => 'descriptionTerm',   # TV and podcast
+        show        => 'showterm',          # TV only
+    );
+    
 
 =item B<login>
 
@@ -931,8 +1005,8 @@ updated.
 
     $ua->purchase($song_id); 
   
-    Purchase and download a song, by song id number or 'songId' as a search 
-    result (use search to find the song and then get the songId from the 
+    Purchase and download a song, by item id number or 'itemId' as a search 
+    result (use search to find the song and then get the itemId from the 
     search result data structure, or "dict" hash reference). Should call the 
     B<download_songs> method automatically after the purchase.
 
@@ -967,39 +1041,47 @@ updated.
     Download a preview for a song entry, if available. $song is a reference
     to the hash of data for a song returned by the search method.
 
+=back
+
+
 =head1 BUGS
 
-The searches under 'artist' are currently crippled, due to a server issue. 
-It seems that the artist name is seldom presently part of song metadata. There 
-is a numeric artistId entry, but I don't currently have an index of artists 
-for lookup.
+  This code is not yet compatible with logins under iTunes 6.0+, 
+  but support for more recent versions may be pending.
 
-Overuse of the B<purchase> routine might allow you to spend more on music 
-than you intended. This might be a bug, from the perspective of your budget. 
-(Enjoy :).
+  The searches under 'artist' may be crippled, due to a server issue.  It seems 
+  that the artist name is seldom presently part of song metadata. There is a 
+  numeric artistId entry, but I don't currently have an index of artists 
+  for lookup.
+
+  Overuse of the purchase routine (once the module is again working under version 7+ )
+  might allow you to spend more on music than you intended. This might be a bug, 
+  from the perspective of your budget. (Enjoy :).
+
 
 =head1 SEE ALSO
 
-=item L<LWP::UserAgent>, L<Audio::M4P>, L<Mac::iTunes>, L<Net::iTMS>
+=over
+
+=item B<LWP::UserAgent>
+
+L<LWP::UserAgent>
+
+=back
 
 =head1 AUTHOR 
 
-William Herrera L<wherrera@skylightview.com>. 
+William Herrera ( B<wherrera@skylightview.com> ). 
 
 =head1 SUPPORT 
 
-Questions, feature requests and bug reports should go to 
-<wherrera@skylightview.com>.
+Questions, feature requests and bug reports should go to <wherrera@skylightview.com>.
 
 =head1 COPYRIGHT 
 
-=over 4
-
-Copyright (c) 2003-2005 William Herrera. All rights reserved.  
-This program is free software; you can redistribute it and/or modify 
-it under the same terms as Perl itself.
-
-=back
+  Copyright (c) 2003-2007 William Herrera. All rights reserved.  
+  This program is free software; you can redistribute it and/or modify 
+  it under the same terms as Perl itself.
 
 =cut
 

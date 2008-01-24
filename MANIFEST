@@ -5,6 +5,7 @@ Todo
 Changes
 lib/LWP/UserAgent/iTMS_Client.pm
 t/01_test.t
+t/02_test.t
 Makefile.PL
 
 META.yml                                 Module meta-data (added by MakeMaker)

@@ -1,24 +1,22 @@
-# t/01_test.t - check module loading, etc
+# t/01_test.t - check for newer indexing (songId versus itemId) and XML issues
 
 require 5.006;
-use Test::More tests => 4;
+use Test::More tests => 3;
 
 BEGIN { use_ok( 'LWP::UserAgent::iTMS_Client' ); }
 
-my $ua = 
-  new LWP::UserAgent::iTMS_Client(user_id => "name", password => 'pw', 
+use LWP::UserAgent::iTMS_Client;
+
+my $ua =
+  new LWP::UserAgent::iTMS_Client(user_id => "name", password => 'pw',
     download_dir => '.' );
-isa_ok ($ua, 'LWP::UserAgent::iTMS_Client');
 
+my $results = $ua->search( all => 'Shania Twain' );
+my @songs = grep { $_->{itemId} } @$results;
+ok( scalar @songs > 10, "All check with two words ok" );
 
-my $results = $ua->search(composer => 'Mozart', song => 'piano duet', 
-  artist => 'britten');
-if($results) {
-    foreach my $b (@{$results}) { $ua->preview($b) }
-}
-
-ok( opendir(my $dh, './previews'), 'Preview download directory created ok' );
-my @p = grep /^s0/, readdir $dh;
-ok(scalar @p > 0, 'got preview(s) ok' );
+$results = $ua->search( artist => 'Shania Twain' );
+@songs = grep { $_->{itemId} } @$results;
+ok( scalar @songs > 10, "Artist check with two words ok" );
 
 
